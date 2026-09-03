@@ -18,26 +18,26 @@ public sealed class CommandTaxonomyShould
     [Fact(DisplayName = "Given Command.Approve, when EnsureValid is called, then succeeds")]
     public void AcceptApproveFactory()
     {
-        Should.NotThrow(() => CommandTaxonomy.EnsureValid(Command.Approve("ok")));
+        Should.NotThrow(static () => CommandTaxonomy.EnsureValid(Command.Approve("ok")));
     }
 
     [Fact(DisplayName = "Given Command.Reject, when EnsureValid is called, then succeeds")]
     public void AcceptRejectFactory()
     {
-        Should.NotThrow(() => CommandTaxonomy.EnsureValid(Command.Reject("no")));
+        Should.NotThrow(static () => CommandTaxonomy.EnsureValid(Command.Reject("no")));
     }
 
     [Fact(DisplayName = "Given Command.Update with values, when EnsureValid is called, then succeeds")]
     public void AcceptUpdateFactory()
     {
-        Should.NotThrow(() => CommandTaxonomy.EnsureValid(
+        Should.NotThrow(static () => CommandTaxonomy.EnsureValid(
             Command.Update(new Dictionary<string, object?> { ["decision"] = "go" })));
     }
 
     [Fact(DisplayName = "Given Command.Update from channel writes, when EnsureValid is called, then succeeds")]
     public void AcceptUpdateFromWrites()
     {
-        Should.NotThrow(() => CommandTaxonomy.EnsureValid(
+        Should.NotThrow(static () => CommandTaxonomy.EnsureValid(
             Command.Update(new ChannelWrite("decision", "go"))));
     }
 
@@ -95,7 +95,7 @@ public sealed class CommandTaxonomyShould
     public async Task ResumeApproveFactoryContinues()
     {
         var checkpointer = new InMemoryCheckpointer();
-        var graph = BuildGateGraph(checkpointer, static context => context.ResumePayload is null
+        var graph = BuildGateGraph(checkpointer, static context => !context.IsResume
             ? NodeResult.Interrupt("wait")
             : NodeResult.Continue(new ChannelWrite("messages", $"approve={context.ResumePayload}")));
 
@@ -117,7 +117,7 @@ public sealed class CommandTaxonomyShould
     public async Task ResumeRejectFactoryDeliversReason()
     {
         var checkpointer = new InMemoryCheckpointer();
-        var graph = BuildGateGraph(checkpointer, static context => context.ResumePayload is null
+        var graph = BuildGateGraph(checkpointer, static context => !context.IsResume
             ? NodeResult.Interrupt("wait")
             : NodeResult.Continue(new ChannelWrite("messages", $"reject={context.ResumePayload}")));
 
@@ -142,7 +142,7 @@ public sealed class CommandTaxonomyShould
             .AddChannel("decision", ChannelKind.LastValue)
             .AddNode(
                 "gate",
-                (context, _) => context.ResumePayload is null
+                static (context, _) => !context.IsResume
                     ? Task.FromResult<NodeResult>(NodeResult.Interrupt("need-decision"))
                     : Task.FromResult<NodeResult>(
                         NodeResult.Continue(
@@ -172,7 +172,7 @@ public sealed class CommandTaxonomyShould
     public async Task ResumeUnknownKindFails()
     {
         var checkpointer = new InMemoryCheckpointer();
-        var graph = BuildGateGraph(checkpointer, static context => context.ResumePayload is null
+        var graph = BuildGateGraph(checkpointer, static context => !context.IsResume
             ? NodeResult.Interrupt("wait")
             : NodeResult.Continue());
 
@@ -194,7 +194,7 @@ public sealed class CommandTaxonomyShould
     public async Task ResumeUpdateWithoutValuesFails()
     {
         var checkpointer = new InMemoryCheckpointer();
-        var graph = BuildGateGraph(checkpointer, static context => context.ResumePayload is null
+        var graph = BuildGateGraph(checkpointer, static context => !context.IsResume
             ? NodeResult.Interrupt("wait")
             : NodeResult.Continue());
 
@@ -215,13 +215,13 @@ public sealed class CommandTaxonomyShould
     [Fact(DisplayName = "Given Approve with null payload, when EnsureValid is called, then succeeds")]
     public void AcceptApproveWithNullPayload()
     {
-        Should.NotThrow(() => CommandTaxonomy.EnsureValid(Command.Approve()));
+        Should.NotThrow(static () => CommandTaxonomy.EnsureValid(Command.Approve()));
     }
 
     [Fact(DisplayName = "Given Reject with null reason, when EnsureValid is called, then succeeds")]
     public void AcceptRejectWithNullPayload()
     {
-        Should.NotThrow(() => CommandTaxonomy.EnsureValid(Command.Reject()));
+        Should.NotThrow(static () => CommandTaxonomy.EnsureValid(Command.Reject()));
     }
 
     [Theory(DisplayName = "Given case-variant kind, when IsKnownKind is called, then returns false")]
@@ -240,7 +240,7 @@ public sealed class CommandTaxonomyShould
     public async Task DoubleResumeAfterDoneFails()
     {
         var checkpointer = new InMemoryCheckpointer();
-        var graph = BuildGateGraph(checkpointer, static context => context.ResumePayload is null
+        var graph = BuildGateGraph(checkpointer, static context => !context.IsResume
             ? NodeResult.Interrupt("wait")
             : NodeResult.Continue(new ChannelWrite("messages", "once")));
 

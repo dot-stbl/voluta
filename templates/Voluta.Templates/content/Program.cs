@@ -131,7 +131,7 @@ static Task<NodeResult> GateAsync(GraphContext context, CancellationToken cancel
 {
     cancellationToken.ThrowIfCancellationRequested();
 
-    if (context.ResumePayload is null)
+    if (!context.IsResume)
     {
         return Task.FromResult<NodeResult>(
             NodeResult.Interrupt(new

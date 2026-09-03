@@ -107,7 +107,7 @@ payload, and `ResumeInvokeAsync` continues with a `Command`. Real output of
 ```csharp
 static Task<NodeResult> GateNodeAsync(GraphContext context, CancellationToken cancellationToken)
 {
-    if (context.ResumePayload is null)
+    if (!context.IsResume)
     {
         return Task.FromResult<NodeResult>(
             NodeResult.Interrupt(new { action = "transfer", amount = 50, currency = "USD" }));
