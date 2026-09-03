@@ -18,6 +18,8 @@ public static class ChatClientNodes
     /// <param name="messages">Message factory.</param>
     /// <param name="chatClient">Optional client; when null, resolved from <see cref="GraphContext.Services" />.</param>
     /// <param name="stream">When true, stream tokens into the graph stream.</param>
+    /// <param name="usageChannel">Optional channel for <see cref="ChatClientUsage" /> token counts.</param>
+    /// <param name="toolCallsChannel">Optional channel for extracted <see cref="ChatClientToolCall" /> list.</param>
     /// <returns>The same <paramref name="graph" /> for chaining.</returns>
     public static StateGraph Add(
         StateGraph graph,
@@ -25,10 +27,21 @@ public static class ChatClientNodes
         string outputChannel,
         Func<GraphContext, IEnumerable<ChatMessage>> messages,
         IChatClient? chatClient = null,
-        bool stream = false)
+        bool stream = false,
+        string? usageChannel = null,
+        string? toolCallsChannel = null)
     {
         return graph.AddNode(
             name,
-            ChatClientGraphNode.Create(outputChannel, messages, chatClient, stream));
+            new ChatClientGraphNode(
+                new ChatClientNodeOptions
+                {
+                    OutputChannel = outputChannel,
+                    Messages = messages,
+                    Stream = stream,
+                    UsageChannel = usageChannel,
+                    ToolCallsChannel = toolCallsChannel,
+                },
+                chatClient));
     }
 }

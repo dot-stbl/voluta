@@ -1,5 +1,25 @@
 #nullable enable
 static Voluta.Agents.AI.ChatClientGraphNode.Create(string! outputChannel, System.Func<Voluta.Graph.GraphContext!, System.Collections.Generic.IEnumerable<Microsoft.Extensions.AI.ChatMessage!>!>! messagesFactory, Microsoft.Extensions.AI.IChatClient? chatClient = null, bool stream = false) -> Voluta.Agents.AI.ChatClientGraphNode!
-static Voluta.Agents.AI.ChatClientNodes.Add(Voluta.Graph.Builder.StateGraph! graph, string! name, string! outputChannel, System.Func<Voluta.Graph.GraphContext!, System.Collections.Generic.IEnumerable<Microsoft.Extensions.AI.ChatMessage!>!>! messages, Microsoft.Extensions.AI.IChatClient? chatClient = null, bool stream = false) -> Voluta.Graph.Builder.StateGraph!
+static Voluta.Agents.AI.ChatClientNodes.Add(Voluta.Graph.Builder.StateGraph! graph, string! name, string! outputChannel, System.Func<Voluta.Graph.GraphContext!, System.Collections.Generic.IEnumerable<Microsoft.Extensions.AI.ChatMessage!>!>! messages, Microsoft.Extensions.AI.IChatClient? chatClient = null, bool stream = false, string? usageChannel = null, string? toolCallsChannel = null) -> Voluta.Graph.Builder.StateGraph!
 Voluta.Agents.AI.ChatClientNodeOptions.Stream.get -> bool
 Voluta.Agents.AI.ChatClientNodeOptions.Stream.init -> void
+Voluta.Agents.AI.ChatClientNodeOptions.ToolCallsChannel.get -> string?
+Voluta.Agents.AI.ChatClientNodeOptions.ToolCallsChannel.init -> void
+Voluta.Agents.AI.ChatClientNodeOptions.UsageChannel.get -> string?
+Voluta.Agents.AI.ChatClientNodeOptions.UsageChannel.init -> void
+Voluta.Agents.AI.ChatClientToolCall
+Voluta.Agents.AI.ChatClientToolCall.Arguments.get -> System.Collections.Generic.IReadOnlyDictionary<string!, object?>?
+Voluta.Agents.AI.ChatClientToolCall.Arguments.init -> void
+Voluta.Agents.AI.ChatClientToolCall.CallId.get -> string?
+Voluta.Agents.AI.ChatClientToolCall.CallId.init -> void
+Voluta.Agents.AI.ChatClientToolCall.ChatClientToolCall() -> void
+Voluta.Agents.AI.ChatClientToolCall.Name.get -> string!
+Voluta.Agents.AI.ChatClientToolCall.Name.init -> void
+Voluta.Agents.AI.ChatClientUsage
+Voluta.Agents.AI.ChatClientUsage.ChatClientUsage() -> void
+Voluta.Agents.AI.ChatClientUsage.CompletionTokens.get -> long?
+Voluta.Agents.AI.ChatClientUsage.CompletionTokens.init -> void
+Voluta.Agents.AI.ChatClientUsage.PromptTokens.get -> long?
+Voluta.Agents.AI.ChatClientUsage.PromptTokens.init -> void
+Voluta.Agents.AI.ChatClientUsage.TotalTokens.get -> long?
+Voluta.Agents.AI.ChatClientUsage.TotalTokens.init -> void

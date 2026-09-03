@@ -470,11 +470,20 @@ services.AddVoluta(v =>
 // 2) MEAI IChatClient as a node (Voluta.Agents.AI)
 ChatClientNodes.Add(
     graph, "answer", "answer",
-    context => [new ChatMessage(ChatRole.User, context.Read<string>("question") ?? "")]);
+    context => [new ChatMessage(ChatRole.User, context.Read<string>("question") ?? "")],
+    stream: true,
+    usageChannel: "usage",
+    toolCallsChannel: "tool_calls");
 
 // 3) Microsoft Agent Framework AIAgent as a node
 AgentNodes.Add(graph, "research", agent, outputChannel: "draft", inputChannel: "question");
 ```
+
+`ChatClientNodes` covers: assistant text → `OutputChannel`; optional `Stream` token
+deltas via `GraphContext.Stream` (`StreamEventKind.Messages`); optional `UsageChannel`
+(`ChatClientUsage` from `ChatResponse.Usage`, best-effort on stream from `UsageContent`);
+optional `ToolCallsChannel` (Append-friendly `List<object?>` of `ChatClientToolCall`,
+empty when the model made no calls). Windowing and ReAct routing stay in the host graph.
 
 ## Long-running / workers
 
