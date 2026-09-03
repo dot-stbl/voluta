@@ -123,7 +123,9 @@ Core tier (`Voluta`, `Abstractions`, `DependencyInjection`) is
 
 ## Status
 
-**v0.3.0 is on NuGet.** Public API is frozen (`PublicAPI.Shipped.txt`).
+**v0.3.0 is on NuGet.** Shipped surface is frozen (`PublicAPI.Shipped.txt`).
+Host time-travel (`GetStateAsync` / `GetHistoryAsync` / `UpdateStateAsync`) is
+available in 0.3.x but still Unshipped (can still move).
 
 ```bash
 dotnet add package Voluta --version 0.3.0
@@ -133,7 +135,8 @@ Still early product surface:
 
 - **UI is a first cut** — inspect / HITL / topology / SSE; not multi-host thread
   discovery or auth  
-- **Checkpoint serde** is best-effort JSON for channel values  
+- **Checkpoint serde** is best-effort JSON; durable restore does not
+  round-trip CLR types (objects come back as JSON strings)  
 - **No first-party MCP** — samples use a demo HTTP tools surface; real MCP sits
   on top of voluta  
 - **No built-in coding agent** — voluta is the graph runtime, not Claude Code  
