@@ -29,24 +29,3 @@ internal interface IChannel
     /// <param name="value">Checkpointed value.</param>
     public void Restore(object? value);
 }
-
-/// <summary>
-///     Creates channel instances from declared kinds.
-/// </summary>
-internal static class ChannelFactory
-{
-    /// <summary>
-    ///     Creates a fresh channel for the given kind.
-    /// </summary>
-    /// <param name="kind">Declared channel kind.</param>
-    /// <returns>A new channel instance.</returns>
-    public static IChannel Create(ChannelKind kind)
-    {
-        return kind switch
-        {
-            ChannelKind.LastValue => new LastValueChannel(),
-            ChannelKind.Append => new AppendChannel(),
-            _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, "Unknown channel kind.")
-        };
-    }
-}

@@ -1,7 +1,10 @@
 using Voluta.Abstractions.Channels;
+using Voluta.Abstractions.State;
 using Voluta.Channels;
+using Voluta.Channels.Custom;
 using Voluta.Exceptions;
 using Voluta.Exceptions.Run;
+using Voluta.Runtime.Engine.Restore;
 
 namespace Voluta.Runtime.Engine;
 
@@ -11,17 +14,19 @@ namespace Voluta.Runtime.Engine;
 internal sealed class ChannelStore
 {
     private readonly Dictionary<string, IChannel> channels = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, GraphChannelDeclaration> declarations = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> versions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Dictionary<string, long>> versionsSeen = new(StringComparer.Ordinal);
 
     /// <summary>
     ///     Creates channels for the declared topology.
     /// </summary>
-    public ChannelStore(IReadOnlyDictionary<string, ChannelKind> declarations)
+    public ChannelStore(IReadOnlyDictionary<string, GraphChannelDeclaration> channelDeclarations)
     {
-        foreach (var (name, kind) in declarations)
+        foreach (var (name, declaration) in channelDeclarations)
         {
-            channels[name] = ChannelFactory.Create(kind);
+            declarations[name] = declaration;
+            channels[name] = ChannelFactory.Create(declaration);
             versions[name] = 0;
         }
     }
@@ -72,7 +77,10 @@ internal sealed class ChannelStore
     {
         foreach (var (name, channel) in channels)
         {
-            channel.Restore(values.TryGetValue(name, out var value) ? value : null);
+            var declaration = declarations[name];
+            var raw = values.TryGetValue(name, out var value) ? value : null;
+            channel.Restore(
+                ChannelRestoreCoercion.Coerce(name, raw, declaration.ValueType, declaration.Kind));
         }
 
         versions.Clear();
@@ -83,7 +91,7 @@ internal sealed class ChannelStore
 
         foreach (var name in channels.Keys)
         {
-            versions.TryAdd(name, 0);
+            _ = versions.TryAdd(name, 0);
         }
 
         versionsSeen.Clear();
@@ -145,7 +153,7 @@ internal sealed class ChannelStore
             if (currentList is null || !string.Equals(currentChannel, channelName, StringComparison.Ordinal))
             {
                 currentChannel = channelName;
-                currentList = new List<object?>();
+                currentList = [];
                 grouped[channelName] = currentList;
             }
 
@@ -207,6 +215,13 @@ internal sealed class ChannelStore
             {
                 throw new GraphConcurrentUpdateException(
                     $"Channel '{channelName}': {exception.Message}");
+            }
+            catch (GraphException exception)
+            {
+                throw new GraphException(
+                    exception.Code,
+                    $"Channel '{channelName}': {exception.Message}",
+                    exception);
             }
 
             versions[channelName] = versions.TryGetValue(channelName, out var version)

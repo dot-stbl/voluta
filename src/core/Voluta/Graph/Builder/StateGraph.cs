@@ -1,6 +1,7 @@
 using Voluta.Abstractions.Channels;
 using Voluta.Abstractions.Checkpoint;
 using Voluta.Abstractions.Diagnostics;
+using Voluta.Abstractions.State;
 using Voluta.Checkpoint;
 using Voluta.Exceptions;
 using Voluta.Graph.Options;
@@ -12,7 +13,7 @@ namespace Voluta.Graph.Builder;
 /// </summary>
 public sealed class StateGraph
 {
-    private readonly Dictionary<string, ChannelKind> channels = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, GraphChannelDeclaration> channels = new(StringComparer.Ordinal);
 
     private readonly Dictionary<string, Func<GraphContext, IReadOnlyList<string>>> conditionalEdges =
         new(StringComparer.Ordinal);
@@ -28,13 +29,58 @@ public sealed class StateGraph
     /// <returns>This builder for chaining.</returns>
     public StateGraph AddChannel(string name, ChannelKind kind)
     {
-        return string.IsNullOrWhiteSpace(name)
+        return AddChannel(new GraphChannelDeclaration(name, kind));
+    }
+
+    /// <summary>
+    ///     Registers a named channel with a restore type used to coerce durable checkpoints.
+    /// </summary>
+    /// <typeparam name="T">Declared channel value type.</typeparam>
+    /// <param name="name">Channel name.</param>
+    /// <param name="kind">LastValue or Append.</param>
+    /// <returns>This builder for chaining.</returns>
+    public StateGraph AddChannel<T>(string name, ChannelKind kind)
+    {
+        return AddChannel(new GraphChannelDeclaration(name, kind, typeof(T)));
+    }
+
+    /// <summary>
+    ///     Registers a named channel with a custom reducer.
+    /// </summary>
+    /// <param name="name">Channel name.</param>
+    /// <param name="reducer">Custom merge reducer.</param>
+    /// <returns>This builder for chaining.</returns>
+    public StateGraph AddChannel(string name, IChannelReducer reducer)
+    {
+        return AddChannel(new GraphChannelDeclaration(name, reducer));
+    }
+
+    /// <summary>
+    ///     Registers a named channel with a custom reducer and restore type.
+    /// </summary>
+    /// <typeparam name="T">Declared channel value type.</typeparam>
+    /// <param name="name">Channel name.</param>
+    /// <param name="reducer">Custom merge reducer.</param>
+    /// <returns>This builder for chaining.</returns>
+    public StateGraph AddChannel<T>(string name, IChannelReducer reducer)
+    {
+        return AddChannel(new GraphChannelDeclaration(name, reducer, typeof(T)));
+    }
+
+    /// <summary>
+    ///     Registers a compiled channel declaration (schema / generator path).
+    /// </summary>
+    /// <param name="declaration">Name, kind, optional reducer and restore type.</param>
+    /// <returns>This builder for chaining.</returns>
+    public StateGraph AddChannel(GraphChannelDeclaration declaration)
+    {
+        return string.IsNullOrWhiteSpace(declaration.Name)
             ? throw new GraphCompileException(VolutaErrorCodes.GraphInvalidChannel, "Channel name must be non-empty.")
-            : channels.TryAdd(name, kind)
+            : channels.TryAdd(declaration.Name, declaration)
                 ? this
                 : throw new GraphCompileException(
                     VolutaErrorCodes.GraphDuplicateChannel,
-                    $"Channel '{name}' is already registered.");
+                    $"Channel '{declaration.Name}' is already registered.");
     }
 
     /// <summary>
@@ -87,7 +133,7 @@ public sealed class StateGraph
     {
         return AddNode(
             name,
-            (context, cancellationToken) => node.InvokeAsync(context, cancellationToken));
+            node.InvokeAsync);
     }
 
     /// <summary>
@@ -185,7 +231,7 @@ public sealed class StateGraph
 
         var topology = new GraphTopology(
             new Dictionary<string, NodeHandler>(nodes, StringComparer.Ordinal),
-            new Dictionary<string, ChannelKind>(channels, StringComparer.Ordinal),
+            new Dictionary<string, GraphChannelDeclaration>(channels, StringComparer.Ordinal),
             staticEdges.ToDictionary(
                 static pair => pair.Key,
                 static pair => (IReadOnlyList<string>)[.. pair.Value],

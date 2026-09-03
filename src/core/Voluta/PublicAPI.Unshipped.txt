@@ -18,6 +18,7 @@ const Voluta.Diagnostics.VolutaDiagnostics.TagProviderName = "provider.name" -> 
 const Voluta.Diagnostics.VolutaDiagnostics.TagStreamKind = "stream.kind" -> string!
 const Voluta.Diagnostics.VolutaDiagnostics.TagRunStatus = "run.status" -> string!
 static readonly Voluta.Diagnostics.VolutaEventIds.ChannelConcurrentUpdate -> Microsoft.Extensions.Logging.EventId
+static readonly Voluta.Diagnostics.VolutaEventIds.ChannelInvalidWrite -> Microsoft.Extensions.Logging.EventId
 static readonly Voluta.Diagnostics.VolutaEventIds.CheckpointCorruptPayload -> Microsoft.Extensions.Logging.EventId
 static readonly Voluta.Diagnostics.VolutaEventIds.CheckpointGetFailed -> Microsoft.Extensions.Logging.EventId
 static readonly Voluta.Diagnostics.VolutaEventIds.CheckpointListFailed -> Microsoft.Extensions.Logging.EventId
@@ -90,3 +91,7 @@ Voluta.Store.InMemoryVolutaStore.GetAsync(System.Collections.Generic.IReadOnlyLi
 Voluta.Store.InMemoryVolutaStore.InMemoryVolutaStore(System.TimeProvider? timeProvider = null) -> void
 Voluta.Store.InMemoryVolutaStore.ListAsync(System.Collections.Generic.IReadOnlyList<string!>! namespace, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<Voluta.Abstractions.Store.StoreItem!>!>!
 Voluta.Store.InMemoryVolutaStore.PutAsync(System.Collections.Generic.IReadOnlyList<string!>! namespace, string! key, object? value, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task!
+Voluta.Graph.Builder.StateGraph.AddChannel(string! name, Voluta.Abstractions.Channels.IChannelReducer! reducer) -> Voluta.Graph.Builder.StateGraph!
+Voluta.Graph.Builder.StateGraph.AddChannel(Voluta.Abstractions.State.GraphChannelDeclaration! declaration) -> Voluta.Graph.Builder.StateGraph!
+Voluta.Graph.Builder.StateGraph.AddChannel<T>(string! name, Voluta.Abstractions.Channels.ChannelKind kind) -> Voluta.Graph.Builder.StateGraph!
+Voluta.Graph.Builder.StateGraph.AddChannel<T>(string! name, Voluta.Abstractions.Channels.IChannelReducer! reducer) -> Voluta.Graph.Builder.StateGraph!

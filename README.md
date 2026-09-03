@@ -225,6 +225,36 @@ Unset properties emit **no** write. An explicit `null` is a clear. Interface-typ
 </details>
 
 <details>
+<summary><strong>Typed channels and custom reducers</strong></summary>
+
+Checkpoints stay dumb JSON (allow-listed primitives / lists / string-key dicts). Types live on the
+**compiled graph**. `AddChannel<T>` records `T` so restore coerces wire values (`long` → `int`,
+JSON object text → `Dictionary<string, string>`, append list elements to `string`). Untyped
+`AddChannel(name, kind)` still works and coexists on the same graph.
+
+```csharp
+var graph = new StateGraph()
+    .AddChannel<int>("score", ChannelKind.LastValue)
+    .AddChannel<string>("messages", ChannelKind.Append)
+    .AddChannel("notes", ChannelKind.Append) // untyped
+    .AddChannel<Dictionary<string, object?>>("artifacts", new DictMergeReducer())
+    .AddNode("left", LeftAsync)
+    .AddNode("right", RightAsync)
+    .AddEdge(GraphConstants.Start, "left")
+    .AddEdge(GraphConstants.Start, "right")
+    .AddEdge("left", GraphConstants.End)
+    .AddEdge("right", GraphConstants.End)
+    .Compile(checkpointer);
+```
+
+`IChannelReducer` is public; `IChannel` stays internal. Built-ins: `LastValueReducer`,
+`AppendReducer`, `DictMergeReducer`. Custom reducers use a separate `AddChannel(name, reducer)`
+overload — `ChannelKind` stays `LastValue | Append`. Durable restore contract:
+`FileCheckpointerRuntimeShould.RehydrateTypedChannelsViaDeclaredValueType`.
+
+</details>
+
+<details>
 <summary><strong>Durable file checkpoint (survive process restart)</strong></summary>
 
 ```csharp

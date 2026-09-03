@@ -1,4 +1,4 @@
-using Voluta.Abstractions.Channels;
+using Voluta.Abstractions.State;
 using Voluta.Graph.Options;
 
 namespace Voluta.Graph;
@@ -11,7 +11,7 @@ namespace Voluta.Graph;
 /// </remarks>
 internal sealed class GraphTopology(
     IReadOnlyDictionary<string, NodeHandler> nodes,
-    IReadOnlyDictionary<string, ChannelKind> channels,
+    IReadOnlyDictionary<string, GraphChannelDeclaration> channels,
     IReadOnlyDictionary<string, IReadOnlyList<string>> staticEdges,
     IReadOnlyDictionary<string, Func<GraphContext, IReadOnlyList<string>>> conditionalEdges,
     int recursionLimit,
@@ -23,9 +23,9 @@ internal sealed class GraphTopology(
     public IReadOnlyDictionary<string, NodeHandler> Nodes { get; } = nodes;
 
     /// <summary>
-    ///     Channel name → kind.
+    ///     Channel name → compiled declaration (kind, optional reducer and restore type).
     /// </summary>
-    public IReadOnlyDictionary<string, ChannelKind> Channels { get; } = channels;
+    public IReadOnlyDictionary<string, GraphChannelDeclaration> Channels { get; } = channels;
 
     /// <summary>
     ///     Source node → static target names (may include END).

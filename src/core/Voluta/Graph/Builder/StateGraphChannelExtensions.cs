@@ -17,7 +17,7 @@ public static class StateGraphChannelExtensions
     {
         foreach (var channel in schema.Channels)
         {
-            graph.AddChannel(channel.Name, channel.Kind);
+            _ = graph.AddChannel(channel);
         }
 
         return graph;

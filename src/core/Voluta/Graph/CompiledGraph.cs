@@ -44,7 +44,10 @@ public sealed class CompiledGraph
         return new GraphDescription
         {
             Nodes = [.. topology.Nodes.Keys.OrderBy(static name => name, StringComparer.Ordinal)],
-            Channels = new Dictionary<string, ChannelKind>(topology.Channels, StringComparer.Ordinal),
+            Channels = topology.Channels.ToDictionary(
+                static pair => pair.Key,
+                static pair => pair.Value.Kind,
+                StringComparer.Ordinal),
             StaticEdges = staticEdges,
             ConditionalSources =
             [

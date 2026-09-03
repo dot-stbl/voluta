@@ -93,7 +93,7 @@ internal static class RunEngineExecution
         }
     }
 
-    public static GraphConcurrentUpdateException? TryApplyWrites(
+    public static GraphException? TryApplyWrites(
         ChannelStore store,
         IReadOnlyList<TaskChannelWrite> writes)
     {
@@ -102,7 +102,7 @@ internal static class RunEngineExecution
             store.ApplyWrites(writes);
             return null;
         }
-        catch (GraphConcurrentUpdateException exception)
+        catch (GraphException exception)
         {
             return exception;
         }

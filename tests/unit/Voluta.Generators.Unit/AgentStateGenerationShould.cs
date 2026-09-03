@@ -21,8 +21,10 @@ public sealed class AgentStateGenerationShould
         schema.Channels.Count.ShouldBe(2);
         schema.Channels[0].Name.ShouldBe(nameof(AgentState.Messages));
         schema.Channels[0].Kind.ShouldBe(ChannelKind.Append);
+        schema.Channels[0].ValueType.ShouldBe(typeof(IList<object?>));
         schema.Channels[1].Name.ShouldBe(nameof(AgentState.Status));
         schema.Channels[1].Kind.ShouldBe(ChannelKind.LastValue);
+        schema.Channels[1].ValueType.ShouldBe(typeof(string));
     }
 
     [Fact(DisplayName = "Given only Status set on Update, when ToWrites is called, then emits solely the status write")]
