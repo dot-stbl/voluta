@@ -45,7 +45,7 @@ Task<IReadOnlyList<CheckpointSnapshot>> ListAsync(string threadId, CancellationT
 InMemory, File, EF, S3, and Redis all implement history. Channel edits from a host are
 `CompiledGraph.UpdateStateAsync(threadId, IEnumerable<ChannelWrite>)` — not a checkpointer
 method. Host reads: `GetStateAsync` (latest `ThreadSnapshot`) / `GetHistoryAsync` (all
-steps). Those façade methods are available in 0.3.x but still Unshipped.
+steps). Those façade methods are available but still Unshipped.
 
 `IVolutaStore` is a different seam (cross-thread KV). Its `ListAsync(namespace)` lists
 **all keys in that namespace**, not checkpoints.
@@ -85,48 +85,34 @@ UIs, support tools, and tests.
 |----------|---------|--------------|-------------|
 | In-memory | `Voluta` | `UseInMemory()` | Tests, samples, single process |
 | File (JSON on disk) | `Voluta.Checkpoints.File` | `UseFile(root)` | Simple single-node durability |
-| SQLite | `Voluta.Checkpoints.Sqlite` | `UseSqlite(path)` | Laptop / single-file demos |
-| **EF Core** | `Voluta.Checkpoints.EntityFrameworkCore` | `UseEntityFrameworkCore<TDb>()` | **Any DB EF supports** (SQL Server, Postgres, …) with *your* DbContext |
-| **Postgres (native)** | `Voluta.Checkpoints.Postgres` | `UsePostgres(…)` | Opinionated **Npgsql-only** path, fixed SQL schema, no EF |
+| Redis | `Voluta.Checkpoints.Redis` | `UseRedis(…)` | Shared store across replicas |
+| **EF Core** | `Voluta.Checkpoints.EntityFrameworkCore` | `UseEntityFrameworkCore<TDb>()` | **Any DB EF supports** (SQL Server, Postgres, SQLite, …) with *your* DbContext |
 | S3 / compatible | `Voluta.Checkpoints.S3` | `UseS3(o => …)` | Object storage |
+
+Native Sqlite / Postgres packages were dropped in 0.3.0 — use File, Redis, EF, or S3.
 
 ```csharp
 services.AddVoluta(v =>
 {
     v.Checkpoints.UseFile("/var/lib/myapp/voluta-checkpoints");
     // or: v.Checkpoints.UseEntityFrameworkCore<MyDb>();  // any EF provider
-    // or: v.Checkpoints.UsePostgres(o => o.ConnectionString = "…");  // Npgsql native
+    // or: v.Checkpoints.UseRedis(o => o.ConnectionString = "…");
     v.Graph((sp, checkpointer) => /* … */ .Compile(checkpointer));
 });
 ```
 
-### EF Core vs native Postgres — why both?
-
-**EF Core already covers Postgres** (and SQL Server, etc.): one package, *your*
-DbContext, provider-agnostic. That remains the right default if you already live
-in EF migrations and multi-DB.
-
-**`Voluta.Checkpoints.Postgres` is optional**, not a replacement for EF:
-
-| | EF Core package | Native Postgres package |
-|--|-----------------|-------------------------|
-| Dependencies | EF Core + *your* provider package | **Npgsql only** |
-| Schema | You map entities / migrations | Fixed `voluta_checkpoints` SQL (embedded) |
-| DBs | Any EF can target | **Postgres only** |
-| Ops | Fits existing EF estate | “Just give me a connection string” |
-
-If you only need Postgres and do **not** want EF on the host, use native.
-If you already have EF + Postgres, **stay on EF** — do not run both for the same
-app without a clear reason.
-
 Provider types are constructed via `Use*` only — not `new` from app code.
 Prefer JSON-friendly channel values (strings, numbers, lists of primitives).
-**Durable rehydrate is lossy:** File / EF / S3 / Redis `FromElement` restores
-`string` / `bool` / `long` / `double` and arrays as `List<object?>`. JSON objects
-(`{}`) become `GetRawText()` — a JSON **string**, not the original CLR type and
-usually not `JsonElement`. InMemory keeps CLR references (no JSON). Do not expect
-typed restore of custom records after a process restart. Unsupported CLR graphs
-fail Put with `checkpoint.unsupported_value_type` (wire v1 allow-list).
+**Durable rehydrate is lossy at the store:** File / EF / S3 / Redis `FromElement`
+restores `string` / `bool` / `long` / `double` and arrays as `List<object?>`. JSON
+objects (`{}`) become `GetRawText()` — a JSON **string**, not the original CLR type
+and usually not `JsonElement`. InMemory keeps CLR references (no JSON).
+
+Declare `AddChannel<T>` (or `[GraphState]` property types) so the **compiled graph**
+coerces those wire values on restore (`int` stays `int`, append strings stay
+`string`). Untyped channels keep the wire shapes. Custom POCOs still fail Put with
+`checkpoint.unsupported_value_type` (wire v1 allow-list) unless they are
+dictionaries / lists of primitives.
 
 In-memory is not “fake voluta.” It is the same protocol with a store that dies
 with the process — fine until durability is a product requirement.

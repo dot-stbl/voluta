@@ -36,7 +36,7 @@
       "type": "parameter",
       "description": "NuGet version of Voluta packages to reference.",
       "datatype": "text",
-      "defaultValue": "0.2.0",
+      "defaultValue": "0.4.0",
       "replaces": "VOLUTA_PACKAGE_VERSION",
       "displayName": "Voluta package version"
     }

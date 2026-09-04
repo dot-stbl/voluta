@@ -25,7 +25,7 @@
 | Cross-thread Store | ✅ `IVolutaStore` + `InMemoryVolutaStore` (#75 partial → #78) |
 | Templates | ✅ `templates/Voluta.Templates` — `dotnet new voluta-agent` (#70 → #81) |
 | PublicAPI ship gate | ✅ `PublicAPI.{Shipped,Unshipped}.txt` + PublicApiAnalyzers on ship packages |
-| NuGet | ✅ `v0.1.0` / `v0.1.1` / `v0.2.0` |
+| NuGet | ✅ `v0.1.0` / `v0.1.1` / `v0.2.0` / `v0.3.0` / `v0.3.1` / `v0.4.0` |
 | Arch tests (package isolation) | ✅ `tests/Voluta.Architecture.Unit` |
 | OpenSpec main specs | ✅ synced post-MVP (public-api-hosting · checkpoint · quality-engineering · studio-host) |
 

@@ -39,11 +39,21 @@ failure than a silent wrong status that routes the agent into the void.
 ## Declaring channels
 
 ```csharp
-.AddChannel("messages", ChannelKind.Append)
-.AddChannel("status", ChannelKind.LastValue)
-// or, from source gen:
+.AddChannel<string>("messages", ChannelKind.Append)
+.AddChannel<int>("score", ChannelKind.LastValue)
+.AddChannel("status", ChannelKind.LastValue) // untyped still works
+.AddChannel("artifacts", new DictMergeReducer())
+// or, from source gen (passes property type into the schema):
 .AddChannels(ReviewState.CreateSchema())
 ```
+
+`AddChannel<T>` records `T` on the compiled graph so durable restore can coerce
+wire values (`long` → `int`, JSON object text → `Dictionary<string, string>`).
+Untyped `AddChannel(name, kind)` coexists on the same graph.
+
+`IChannelReducer` is the public custom-merge seam (`LastValueReducer`,
+`AppendReducer`, `DictMergeReducer`). `IChannel` stays internal. Custom reducers
+use `AddChannel(name, reducer)` — `ChannelKind` stays `LastValue | Append`.
 
 Declare **before** nodes run. The schema is part of the compiled contract;
 surprise channels mid-flight are not a feature.

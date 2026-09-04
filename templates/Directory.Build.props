@@ -13,7 +13,7 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <IsPackable>true</IsPackable>
-    <Version>0.2.0</Version>
+    <Version>0.4.0</Version>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <Authors>Voluta contributors</Authors>
     <PackageProjectUrl>https://github.com/dot-stbl/voluta</PackageProjectUrl>

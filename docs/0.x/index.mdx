@@ -112,7 +112,7 @@ Two consequences worth internalizing:
 | `Voluta.Generators` | `[GraphState]` source generator |
 | `Voluta.Testing` | Doubles + checkpointer conformance suite |
 | `Voluta.Checkpoints.File` | JSON on disk (`UseFile`) |
-| `Voluta.Checkpoints.Sqlite` | SQLite single file (`UseSqlite`) |
+| `Voluta.Checkpoints.Redis` | Redis (`UseRedis`) |
 | `Voluta.Checkpoints.EntityFrameworkCore` | Provider-agnostic EF Core (`UseEntityFrameworkCore<T>`) |
 | `Voluta.Checkpoints.S3` | AWS S3 / S3-compatible (`UseS3`) |
 | `Voluta.Agents.AI` | MAF `AIAgent` + MEAI `IChatClient` as graph nodes |
@@ -123,20 +123,20 @@ Core tier (`Voluta`, `Abstractions`, `DependencyInjection`) is
 
 ## Status
 
-**v0.3.0 is on NuGet.** Shipped surface is frozen (`PublicAPI.Shipped.txt`).
+**v0.4.0 is on NuGet.** Shipped surface is frozen (`PublicAPI.Shipped.txt`).
 Host time-travel (`GetStateAsync` / `GetHistoryAsync` / `UpdateStateAsync`) is
-available in 0.3.x but still Unshipped (can still move).
+available but still Unshipped (can still move).
 
 ```bash
-dotnet add package Voluta --version 0.3.0
+dotnet add package Voluta --version 0.4.0
 ```
 
 Still early product surface:
 
 - **UI is a first cut** — inspect / HITL / topology / SSE; not multi-host thread
   discovery or auth  
-- **Checkpoint serde** is best-effort JSON; durable restore does not
-  round-trip CLR types (objects come back as JSON strings)  
+- **Checkpoint serde** is still JSON at the store; `AddChannel<T>` coerces
+  declared types on restore (`int`, `string` lists, string-key dicts)  
 - **No first-party MCP** — samples use a demo HTTP tools surface; real MCP sits
   on top of voluta  
 - **No built-in coding agent** — voluta is the graph runtime, not Claude Code  

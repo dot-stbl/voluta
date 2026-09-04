@@ -17,10 +17,10 @@ can pause a thread for days, then resume in another process.
 → AOT-ready core not a kitchen sink
 ```
 
-> **v0.3.0** is on NuGet. Shipped surface is frozen (`PublicAPI.Shipped.txt`).
+> **v0.4.0** is on NuGet. Shipped surface is frozen (`PublicAPI.Shipped.txt`).
 > Host time-travel (`GetStateAsync` / `GetHistoryAsync` / `UpdateStateAsync` / `ForkAsync` / `Continue*`)
-> is available in 0.3.x but still listed in `PublicAPI.Unshipped.txt` (can still move).
-> `dotnet add package Voluta --version 0.3.0` — see [Quick Start](#quick-start).
+> is available but still listed in `PublicAPI.Unshipped.txt` (can still move).
+> `dotnet add package Voluta --version 0.4.0` — see [Quick Start](#quick-start).
 
 ## See it in action
 
@@ -146,7 +146,7 @@ var done = await graph.ResumeInvokeAsync(
 
 InMemory, File, EF, S3, and Redis all implement history. `IVolutaStore` is a separate cross-thread KV (`Put`/`Get`/`List`/`Delete` by namespace) — `ListAsync(namespace)` lists **all keys in that namespace**, not checkpoints.
 
-Host-facing projection — no need to spelunk C-shape fields. These methods are available in 0.3.x (`PublicAPI.Unshipped.txt`, not frozen):
+Host-facing projection — no need to spelunk C-shape fields. These methods are available (`PublicAPI.Unshipped.txt`, not frozen):
 
 ```csharp
 // latest snapshot for ops / HTTP / UI  (wraps ICheckpointer.GetAsync)
@@ -167,7 +167,7 @@ Ops UI: `GET /voluta/api/threads/{id}/history` lists steps; inspector shows them
 
 Ops and support workflows can edit channel values and branch threads without re-invoking from scratch.
 There is **no** `putWrites`. Channel edits go through `UpdateStateAsync(threadId, IEnumerable<ChannelWrite>)`
-(available in 0.3.x, Unshipped): it loads the latest checkpoint, applies the same LastValue / Append
+(Unshipped): it loads the latest checkpoint, applies the same LastValue / Append
 reducers as runtime input seeding, and `Put`s a **new** history step.
 
 ```csharp
@@ -280,8 +280,9 @@ Values serialize with `System.Text.Json` — prefer JSON-friendly types (strings
 primitives). **Durable rehydrate is lossy:** File / EF / S3 / Redis `FromElement` restores
 `string` / `bool` / `long` / `double` and arrays as `List<object?>`. JSON objects (`{}`) become
 `GetRawText()` — a JSON **string**, not the original CLR type and usually not `JsonElement`.
-`InMemoryCheckpointer` keeps CLR references (no JSON). Do not expect typed restore of custom
-records after a process restart.
+`InMemoryCheckpointer` keeps CLR references (no JSON). Declare `AddChannel<T>` so the compiled
+graph coerces those wire values on restore. Custom POCOs still fail Put unless they are
+allow-listed shapes.
 
 For tests, `InMemoryCheckpointer` is enough; every storage implements `ICheckpointer` and can
 run `CheckpointerConformance.RunAllAsync`. Provider types (`FileCheckpointer`, EF, S3, Redis)
@@ -420,7 +421,7 @@ dotnet run --project samples/InterruptResume
 Reference from your app:
 
 ```bash
-dotnet add package Voluta --version 0.3.0
+dotnet add package Voluta --version 0.4.0
 # or, from a clone:
 dotnet add reference path/to/voluta/src/Voluta/Voluta.csproj
 ```
@@ -840,13 +841,14 @@ dotnet run --project samples/UiHost             # Studio: http://localhost:5188/
 Stated plainly so you can judge the fit:
 
 - **PublicAPI surface can still move** before a major bump (tracked with PublicApiAnalyzers).
-  Shipped surface up to `v0.3.0` is frozen in `PublicAPI.Shipped.txt`. Host time-travel
+  Shipped surface up to `v0.4.0` is frozen in `PublicAPI.Shipped.txt`. Host time-travel
   (`GetStateAsync` / `GetHistoryAsync` / `UpdateStateAsync` / `ForkAsync` / `Continue*`)
-  is available in 0.3.x but still Unshipped.
+  is available but still Unshipped.
 - **Studio SPA auth** is not built in; `/api/v1` supports an optional single API key
   (`StudioApiOptions.ApiKey`). Multi-tenant auth is out of scope for now.
-- **Checkpoint serde** is best-effort JSON; durable restore does not round-trip CLR types
-  (see [Durable file checkpoint](#durable-file-checkpoint-survive-process-restart)).
+- **Checkpoint serde** is JSON at the store; `AddChannel<T>` coerces declared types on restore
+  (see [Typed channels](#typed-channels-and-custom-reducers) and
+  [Durable file checkpoint](#durable-file-checkpoint-survive-process-restart)).
   Versioning/evolution is still open.
 - **MCP in samples** is a light HTTP bridge (inlined in MarketingAgent), not a product package;
   real MCP is `ModelContextProtocol` (+ AspNetCore) on top of Voluta.
