@@ -1,16 +1,15 @@
 using Voluta.Abstractions.Channels;
 using Voluta.Abstractions.Channels.Reducers;
+using Voluta.Abstractions.Diagnostics;
 using Voluta.Exceptions;
 
-namespace Voluta.Channels;
+namespace Voluta.Channels.Custom;
 
 /// <summary>
-///     Channel that accepts at most one write per superstep.
+///     Channel that delegates superstep merge to a public <see cref="IChannelReducer" />.
 /// </summary>
-internal sealed class LastValueChannel : IChannel
+internal sealed class ReducerChannel(IChannelReducer reducer) : IChannel
 {
-    private static readonly LastValueReducer Reducer = new();
-
     private object? value;
 
     /// <inheritdoc />
@@ -27,11 +26,19 @@ internal sealed class LastValueChannel : IChannel
     {
         try
         {
-            value = Reducer.Reduce(value, values);
+            value = reducer.Reduce(value, values);
+        }
+        catch (GraphException)
+        {
+            throw;
+        }
+        catch (InvalidOperationException exception) when (reducer is LastValueReducer)
+        {
+            throw new GraphConcurrentUpdateException(exception.Message);
         }
         catch (InvalidOperationException exception)
         {
-            throw new GraphConcurrentUpdateException(exception.Message);
+            throw new GraphException(VolutaErrorCodes.ChannelInvalidWrite, exception.Message, exception);
         }
     }
 

@@ -42,6 +42,7 @@ public sealed class VolutaErrorCodesShould
     [InlineData(nameof(VolutaErrorCodes.GraphThreadNotFound), "graph.thread_not_found")]
     [InlineData(nameof(VolutaErrorCodes.GraphStepNotFound), "graph.step_not_found")]
     [InlineData(nameof(VolutaErrorCodes.ChannelConcurrentUpdate), "channel.concurrent_update")]
+    [InlineData(nameof(VolutaErrorCodes.ChannelInvalidWrite), "channel.invalid_write")]
     [InlineData(nameof(VolutaErrorCodes.CheckpointPutFailed), "checkpoint.put_failed")]
     [InlineData(nameof(VolutaErrorCodes.CheckpointGetFailed), "checkpoint.get_failed")]
     [InlineData(nameof(VolutaErrorCodes.CheckpointListFailed), "checkpoint.list_failed")]

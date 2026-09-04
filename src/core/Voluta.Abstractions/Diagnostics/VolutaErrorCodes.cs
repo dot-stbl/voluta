@@ -59,6 +59,9 @@ public static class VolutaErrorCodes
     /// <summary>LastValue channel received multiple writers in one superstep.</summary>
     public const string ChannelConcurrentUpdate = "channel.concurrent_update";
 
+    /// <summary>Custom reducer received a write it cannot merge.</summary>
+    public const string ChannelInvalidWrite = "channel.invalid_write";
+
     /// <summary>Checkpointer Put failed (IO / provider).</summary>
     public const string CheckpointPutFailed = "checkpoint.put_failed";
 
@@ -104,6 +107,7 @@ public static class VolutaErrorCodes
         GraphThreadNotFound,
         GraphStepNotFound,
         ChannelConcurrentUpdate,
+        ChannelInvalidWrite,
         CheckpointPutFailed,
         CheckpointGetFailed,
         CheckpointListFailed,

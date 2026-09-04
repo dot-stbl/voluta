@@ -57,6 +57,9 @@ public static class VolutaEventIds
     /// <summary><see cref="VolutaErrorCodes.ChannelConcurrentUpdate" />.</summary>
     public static readonly EventId ChannelConcurrentUpdate = new(2040, VolutaErrorCodes.ChannelConcurrentUpdate);
 
+    /// <summary><see cref="VolutaErrorCodes.ChannelInvalidWrite" />.</summary>
+    public static readonly EventId ChannelInvalidWrite = new(2041, VolutaErrorCodes.ChannelInvalidWrite);
+
     /// <summary><see cref="VolutaErrorCodes.CheckpointPutFailed" />.</summary>
     public static readonly EventId CheckpointPutFailed = new(2100, VolutaErrorCodes.CheckpointPutFailed);
 
@@ -102,6 +105,7 @@ public static class VolutaEventIds
         GraphThreadNotFound,
         GraphStepNotFound,
         ChannelConcurrentUpdate,
+        ChannelInvalidWrite,
         CheckpointPutFailed,
         CheckpointGetFailed,
         CheckpointListFailed,

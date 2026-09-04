@@ -1,5 +1,6 @@
 #nullable enable
 const Voluta.Abstractions.Diagnostics.VolutaErrorCodes.ChannelConcurrentUpdate = "channel.concurrent_update" -> string!
+const Voluta.Abstractions.Diagnostics.VolutaErrorCodes.ChannelInvalidWrite = "channel.invalid_write" -> string!
 const Voluta.Abstractions.Diagnostics.VolutaErrorCodes.CheckpointCorruptPayload = "checkpoint.corrupt_payload" -> string!
 const Voluta.Abstractions.Diagnostics.VolutaErrorCodes.CheckpointGetFailed = "checkpoint.get_failed" -> string!
 const Voluta.Abstractions.Diagnostics.VolutaErrorCodes.CheckpointListFailed = "checkpoint.list_failed" -> string!
@@ -100,3 +101,24 @@ Voluta.Abstractions.Store.StoreItem.UpdatedAt.get -> System.DateTimeOffset
 Voluta.Abstractions.Store.StoreItem.UpdatedAt.init -> void
 Voluta.Abstractions.Store.StoreItem.Value.get -> object?
 Voluta.Abstractions.Store.StoreItem.Value.init -> void
+
+Voluta.Abstractions.Channels.IChannelReducer
+Voluta.Abstractions.Channels.IChannelReducer.Reduce(object? current, System.Collections.Generic.IReadOnlyList<object?>! writes) -> object?
+Voluta.Abstractions.Channels.Reducers.AppendReducer
+Voluta.Abstractions.Channels.Reducers.AppendReducer.AppendReducer() -> void
+Voluta.Abstractions.Channels.Reducers.AppendReducer.Reduce(object? current, System.Collections.Generic.IReadOnlyList<object?>! writes) -> object?
+Voluta.Abstractions.Channels.Reducers.DictMergeReducer
+Voluta.Abstractions.Channels.Reducers.DictMergeReducer.DictMergeReducer() -> void
+Voluta.Abstractions.Channels.Reducers.DictMergeReducer.Reduce(object? current, System.Collections.Generic.IReadOnlyList<object?>! writes) -> object?
+Voluta.Abstractions.Channels.Reducers.LastValueReducer
+Voluta.Abstractions.Channels.Reducers.LastValueReducer.LastValueReducer() -> void
+Voluta.Abstractions.Channels.Reducers.LastValueReducer.Reduce(object? current, System.Collections.Generic.IReadOnlyList<object?>! writes) -> object?
+Voluta.Abstractions.State.GraphChannelDeclaration.GraphChannelDeclaration(string! name, Voluta.Abstractions.Channels.ChannelKind kind, System.Type! valueType) -> void
+Voluta.Abstractions.State.GraphChannelDeclaration.GraphChannelDeclaration(string! name, Voluta.Abstractions.Channels.ChannelKind kind, System.Type? valueType, Voluta.Abstractions.Channels.IChannelReducer? reducer) -> void
+Voluta.Abstractions.State.GraphChannelDeclaration.GraphChannelDeclaration(string! name, Voluta.Abstractions.Channels.IChannelReducer! reducer) -> void
+Voluta.Abstractions.State.GraphChannelDeclaration.GraphChannelDeclaration(string! name, Voluta.Abstractions.Channels.IChannelReducer! reducer, System.Type? valueType) -> void
+Voluta.Abstractions.State.GraphChannelDeclaration.Reducer.get -> Voluta.Abstractions.Channels.IChannelReducer?
+Voluta.Abstractions.State.GraphChannelDeclaration.ValueType.get -> System.Type?
+Voluta.Abstractions.State.GraphChannelSchema.Builder.Add(string! name, Voluta.Abstractions.Channels.ChannelKind kind, System.Type! valueType) -> Voluta.Abstractions.State.GraphChannelSchema.Builder!
+Voluta.Abstractions.State.GraphChannelSchema.Builder.Add(string! name, Voluta.Abstractions.Channels.IChannelReducer! reducer) -> Voluta.Abstractions.State.GraphChannelSchema.Builder!
+Voluta.Abstractions.State.GraphChannelSchema.Builder.Add(string! name, Voluta.Abstractions.Channels.IChannelReducer! reducer, System.Type? valueType) -> Voluta.Abstractions.State.GraphChannelSchema.Builder!

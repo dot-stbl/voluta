@@ -1,5 +1,5 @@
-using System.Collections;
 using Voluta.Abstractions.Channels;
+using Voluta.Abstractions.Channels.Reducers;
 
 namespace Voluta.Channels;
 
@@ -8,7 +8,9 @@ namespace Voluta.Channels;
 /// </summary>
 internal sealed class AppendChannel : IChannel
 {
-    private List<object?> items = [];
+    private static readonly AppendReducer Reducer = new();
+
+    private object? value = new List<object?>();
 
     /// <inheritdoc />
     public ChannelKind Kind => ChannelKind.Append;
@@ -16,80 +18,18 @@ internal sealed class AppendChannel : IChannel
     /// <inheritdoc />
     public object? Get()
     {
-        return items.ToList();
+        return value is List<object?> list ? list.ToList() : value;
     }
 
     /// <inheritdoc />
     public void Update(IReadOnlyList<object?> values)
     {
-        if (values.Count == 0)
-        {
-            return;
-        }
-
-        foreach (var write in values)
-        {
-            AppendChannelHelpers.AppendValue(items, write);
-        }
+        value = Reducer.Reduce(value, values);
     }
 
     /// <inheritdoc />
     public void Restore(object? restored)
     {
-        items = AppendChannelHelpers.MaterializeList(restored);
-    }
-}
-
-/// <summary>
-///     Pure helpers for append-channel merge semantics.
-/// </summary>
-file static class AppendChannelHelpers
-{
-    public static void AppendValue(List<object?> items, object? write)
-    {
-        if (write is null)
-        {
-            items.Add(null);
-            return;
-        }
-
-        if (write is string)
-        {
-            items.Add(write);
-            return;
-        }
-
-        if (write is IEnumerable enumerable)
-        {
-            foreach (var item in enumerable)
-            {
-                items.Add(item);
-            }
-
-            return;
-        }
-
-        items.Add(write);
-    }
-
-    public static List<object?> MaterializeList(object? restored)
-    {
-        if (restored is null)
-        {
-            return [];
-        }
-
-        if (restored is IEnumerable enumerable and not string)
-        {
-            var list = new List<object?>();
-            foreach (var item in enumerable)
-            {
-                list.Add(item);
-            }
-
-            return list;
-        }
-
-        return [restored];
+        value = Reducer.Reduce(null, restored is null ? [] : [restored]);
     }
 }
