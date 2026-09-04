@@ -20,5 +20,4 @@ archived as
 `openspec/changes/archive/2026-08-14-architecture-runtime-core/`.
 Decisions: [.agents/decisions.md](.agents/decisions.md). Roadmap:
 [.agents/roadmap.md](.agents/roadmap.md). Conventions:
-[.agents/conventions.md](.agents/conventions.md). GitHub epic #1 /
-milestone `v0.1 · MVP runtime` (NuGet tag still open).
+[.agents/conventions.md](.agents/conventions.md). NuGet `v0.4.0`.

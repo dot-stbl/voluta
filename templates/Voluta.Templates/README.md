@@ -42,7 +42,7 @@ Optional parameters:
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `--framework` | `net10.0` | Target framework |
-| `--volutaVersion` | `0.2.0` | NuGet version of Voluta packages |
+| `--volutaVersion` | `0.4.0` | NuGet version of Voluta packages |
 
 ## Uninstall
 

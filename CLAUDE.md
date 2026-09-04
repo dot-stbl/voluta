@@ -19,7 +19,7 @@ API .NET-native: generic state, типизированные редьюсеры,
 **Shipped on `main`:** Pregel runtime, checkpointers (InMemory · File · EF Core · S3) with
 `AddVolutaCheckpoints` / `Use*`, Send fan-out, `Subgraph.AsNode`, topology export, Testing,
 Generators, Agents.AI (MEAI/MAF), `MapVolutaUI`, samples (incl. MarketingAgent + MockAdMcp),
-BenchmarkDotNet. **Not on NuGet yet** (0.1 tag pending).
+BenchmarkDotNet. **NuGet:** `v0.4.0`.
 
 **Specs (source of truth):** main OpenSpec under
 [`openspec/specs/`](openspec/specs/) (12 capabilities). Planning change archived:

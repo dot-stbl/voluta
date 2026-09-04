@@ -18,7 +18,7 @@
         <NoWarn>$(NoWarn);CS1591</NoWarn>
 
         <!-- OSS metadata — applied to every produced package. -->
-        <Version>0.3.1</Version>
+        <Version>0.4.0</Version>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <Authors>Voluta contributors</Authors>
         <PackageProjectUrl>https://github.com/dot-stbl/voluta</PackageProjectUrl>
