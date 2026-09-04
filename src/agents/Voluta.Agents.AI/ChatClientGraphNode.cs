@@ -13,6 +13,9 @@ namespace Voluta.Agents.AI;
 ///     When <see cref="ChatClientNodeOptions.Stream" /> is true, uses
 ///     <see cref="IChatClient.GetStreamingResponseAsync" /> and bridges token fragments via
 ///     <see cref="GraphContext.Stream" />.
+///     Optional <see cref="ChatClientNodeOptions.UsageChannel" /> and
+///     <see cref="ChatClientNodeOptions.ToolCallsChannel" /> receive token counts and parsed
+///     function calls after the completion (or after the stream ends).
 /// </summary>
 public sealed class ChatClientGraphNode(
     ChatClientNodeOptions options,
@@ -20,6 +23,8 @@ public sealed class ChatClientGraphNode(
 {
     /// <summary>
     ///     Creates a node that completes chat and writes assistant text to a channel.
+    ///     Usage and tool-call channel writes are configured via
+    ///     <see cref="ChatClientNodeOptions" /> — keep this factory thin.
     /// </summary>
     /// <param name="outputChannel">Target channel.</param>
     /// <param name="messagesFactory">Builds the message list from the graph context.</param>
@@ -47,33 +52,57 @@ public sealed class ChatClientGraphNode(
     {
         var client = chatClient ?? context.GetRequiredService<IChatClient>();
         var messages = options.Messages(context);
-        var text = options.Stream
-            ? await StreamAndBridgeAsync(client, messages, context, cancellationToken)
-            : await CompleteAsync(client, messages, cancellationToken);
-        return NodeResult.Continue(new ChannelWrite(options.OutputChannel, text));
+        var completion = options.Stream
+            ? await ChatClientCompletion.StreamAndBridgeAsync(
+                client,
+                messages,
+                options.ChatOptions,
+                context,
+                cancellationToken)
+            : await ChatClientCompletion.CompleteAsync(
+                client,
+                messages,
+                options.ChatOptions,
+                cancellationToken);
+        return NodeResult.Continue(ChatClientChannelWrites.Collect(options, completion));
     }
+}
 
-    private async Task<string> CompleteAsync(
+file sealed record ChatClientTurn(
+    string Text,
+    UsageDetails? Usage,
+    IReadOnlyList<ChatClientToolCall> ToolCalls);
+
+file static class ChatClientCompletion
+{
+    public static async Task<ChatClientTurn> CompleteAsync(
         IChatClient client,
         IEnumerable<ChatMessage> messages,
+        ChatOptions? chatOptions,
         CancellationToken cancellationToken)
     {
-        var response = await client.GetResponseAsync(messages, options.ChatOptions, cancellationToken);
-        return response.Text ?? string.Empty;
+        var response = await client.GetResponseAsync(messages, chatOptions, cancellationToken);
+        return new ChatClientTurn(
+            response.Text ?? string.Empty,
+            response.Usage,
+            ChatClientResponseExtraction.ToolCalls(response));
     }
 
-    private async Task<string> StreamAndBridgeAsync(
+    public static async Task<ChatClientTurn> StreamAndBridgeAsync(
         IChatClient client,
         IEnumerable<ChatMessage> messages,
+        ChatOptions? chatOptions,
         GraphContext context,
         CancellationToken cancellationToken)
     {
         var buffer = new StringBuilder();
+        var updates = new List<ChatResponseUpdate>();
         await foreach (var update in client.GetStreamingResponseAsync(
                            messages,
-                           options.ChatOptions,
+                           chatOptions,
                            cancellationToken))
         {
+            updates.Add(update);
             var fragment = update.Text;
             if (string.IsNullOrEmpty(fragment))
             {
@@ -84,27 +113,116 @@ public sealed class ChatClientGraphNode(
             await context.Stream.WriteMessageAsync(fragment, cancellationToken);
         }
 
-        return buffer.ToString();
+        var reconstructed = updates.ToChatResponse();
+        var text = buffer.Length > 0 ? buffer.ToString() : reconstructed.Text ?? string.Empty;
+        return new ChatClientTurn(
+            text,
+            reconstructed.Usage ?? ChatClientResponseExtraction.UsageFromUpdates(updates),
+            ChatClientResponseExtraction.ToolCalls(reconstructed, updates));
     }
 }
 
-/// <summary>
-///     Options for <see cref="ChatClientGraphNode" />.
-/// </summary>
-public sealed class ChatClientNodeOptions
+file static class ChatClientResponseExtraction
 {
-    /// <summary>Channel receiving assistant text.</summary>
-    public required string OutputChannel { get; init; }
+    public static IReadOnlyList<ChatClientToolCall> ToolCalls(
+        ChatResponse response,
+        IReadOnlyList<ChatResponseUpdate>? updates = null)
+    {
+        var calls = new List<ChatClientToolCall>();
+        foreach (var message in response.Messages)
+        {
+            AddFromContents(calls, message.Contents);
+        }
 
-    /// <summary>Builds chat messages for the completion call.</summary>
-    public required Func<GraphContext, IEnumerable<ChatMessage>> Messages { get; init; }
+        if (calls.Count == 0 && updates is not null)
+        {
+            foreach (var update in updates)
+            {
+                AddFromContents(calls, update.Contents);
+            }
+        }
 
-    /// <summary>Optional MEAI chat options.</summary>
-    public ChatOptions? ChatOptions { get; init; }
+        return calls;
+    }
 
-    /// <summary>
-    ///     When true, uses streaming MEAI API and bridges each text delta via
-    ///     <see cref="GraphContext.Stream" /> as <c>StreamEventKind.Messages</c>.
-    /// </summary>
-    public bool Stream { get; init; }
+    public static UsageDetails? UsageFromUpdates(IReadOnlyList<ChatResponseUpdate> updates)
+    {
+        UsageDetails? last = null;
+        foreach (var update in updates)
+        {
+            foreach (var content in update.Contents)
+            {
+                if (content is UsageContent usageContent)
+                {
+                    last = usageContent.Details;
+                }
+            }
+        }
+
+        return last;
+    }
+
+    public static void AddFromContents(List<ChatClientToolCall> calls, IList<AIContent>? contents)
+    {
+        if (contents is null)
+        {
+            return;
+        }
+
+        foreach (var content in contents)
+        {
+            if (content is not FunctionCallContent functionCall)
+            {
+                continue;
+            }
+
+            calls.Add(
+                new ChatClientToolCall
+                {
+                    Name = functionCall.Name,
+                    CallId = functionCall.CallId,
+                    Arguments = functionCall.Arguments is { } arguments
+                        ? arguments.ToDictionary(
+                            static pair => pair.Key,
+                            static pair => pair.Value)
+                        : null,
+                });
+        }
+    }
+}
+
+file static class ChatClientChannelWrites
+{
+    public static IReadOnlyList<ChannelWrite> Collect(ChatClientNodeOptions options, ChatClientTurn completion)
+    {
+        var writes = new List<ChannelWrite>
+        {
+            new(options.OutputChannel, completion.Text),
+        };
+
+        if (options.UsageChannel is { Length: > 0 } usageChannel)
+        {
+            writes.Add(new ChannelWrite(usageChannel, ToUsage(completion.Usage)));
+        }
+
+        if (options.ToolCallsChannel is { Length: > 0 } toolCallsChannel)
+        {
+            writes.Add(
+                new ChannelWrite(
+                    toolCallsChannel,
+                    completion.ToolCalls.Cast<object?>().ToList()));
+        }
+
+        return writes;
+    }
+
+    public static ChatClientUsage ToUsage(UsageDetails? details)
+    {
+        return new ChatClientUsage
+        {
+            PromptTokens = details?.InputTokenCount,
+            CompletionTokens = details?.OutputTokenCount,
+            TotalTokens = details?.TotalTokenCount,
+        };
+    }
 }
