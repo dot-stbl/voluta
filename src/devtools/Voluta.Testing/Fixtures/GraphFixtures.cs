@@ -49,7 +49,7 @@ public static class GraphFixtures
     }
 
     /// <summary>
-    ///     START → gate → END; gate interrupts when <see cref="GraphContext.ResumePayload" /> is null.
+    ///     START → gate → END; gate interrupts when <see cref="GraphContext.IsResume" /> is false.
     /// </summary>
     /// <param name="channelName">Append channel for post-resume write (default <c>messages</c>).</param>
     /// <param name="nodeName">Gate node name (default <c>gate</c>).</param>
@@ -67,7 +67,7 @@ public static class GraphFixtures
                 nodeName,
                 (context, _) =>
                 {
-                    return context.ResumePayload is null
+                    return !context.IsResume
                         ? Task.FromResult<NodeResult>(NodeResult.Interrupt(payload))
                         : Task.FromResult<NodeResult>(
                             NodeResult.Continue(new ChannelWrite(channelName, "approved")));

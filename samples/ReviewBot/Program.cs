@@ -97,7 +97,7 @@ var graph = new StateGraph()
         "review",
         async (context, cancellationToken) =>
         {
-            if (hitl && context.ResumePayload is null)
+            if (hitl && !context.IsResume)
             {
                 CliUi.Node("review", "interrupt · approve to continue");
                 return NodeResult.Interrupt(new { reason = "approve_review", query });

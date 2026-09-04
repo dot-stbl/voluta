@@ -12,11 +12,19 @@ internal static class RunEngineRouting
         GraphTopology topology,
         string source,
         IReadOnlyDictionary<string, object?> channelValues,
-        object? resumePayload)
+        object? resumePayload,
+        bool isResume = false,
+        string? resumeKind = null)
     {
         if (topology.ConditionalEdges.TryGetValue(source, out var router))
         {
-            var context = new GraphContext(source, channelValues, resumePayload, services: topology.Services);
+            var context = new GraphContext(
+                source,
+                channelValues,
+                resumePayload,
+                services: topology.Services,
+                isResume: isResume,
+                resumeKind: resumeKind);
             return [.. router(context)];
         }
 

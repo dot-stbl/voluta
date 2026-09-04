@@ -224,9 +224,9 @@ static Task<NodeResult> RiskGateAsync(GraphContext context, CancellationToken ca
                 new ChannelWrite("status", "synthesize")));
     }
 
-    if (context.ResumePayload is not null)
+    if (context.IsResume)
     {
-        return Task.FromResult(ResumeRiskGate(context.ResumePayload));
+        return Task.FromResult(ResumeRiskGate(context.ResumePayload, context.ResumeKind));
     }
 
     var level = goal.Contains("purge", StringComparison.OrdinalIgnoreCase) ? "critical"
@@ -250,10 +250,11 @@ static Task<NodeResult> RiskGateAsync(GraphContext context, CancellationToken ca
             }));
 }
 
-static NodeResult ResumeRiskGate(object resumePayload)
+static NodeResult ResumeRiskGate(object? resumePayload, string? resumeKind)
 {
-    var payloadText = resumePayload.ToString() ?? "";
-    var rejected = payloadText.Contains("reject", StringComparison.OrdinalIgnoreCase)
+    var payloadText = resumePayload?.ToString() ?? "";
+    var rejected = resumeKind == Command.Kinds.Reject
+                   || payloadText.Contains("reject", StringComparison.OrdinalIgnoreCase)
                    || payloadText.Contains("deny", StringComparison.OrdinalIgnoreCase)
                    || string.Equals(payloadText, "no", StringComparison.OrdinalIgnoreCase);
     return rejected

@@ -35,6 +35,8 @@ public sealed class Command
     /// <summary>
     ///     Opaque resume payload injected as <c>GraphContext.ResumePayload</c> on the first
     ///     superstep after resume (approve/reject reason, free-form host data).
+    ///     The answer, never the interrupt ask. A null payload still sets
+    ///     <c>GraphContext.IsResume</c>; gate on that flag, not on payload null.
     /// </summary>
     public object? Payload { get; init; }
 

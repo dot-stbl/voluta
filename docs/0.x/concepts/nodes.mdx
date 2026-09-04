@@ -39,7 +39,9 @@ shared bag other nodes mutate while you run.
 | `NodeName` | Know who you are (logging, multi-role handlers) |
 | `Read<T>(channel)` | Typed read; missing → `default` |
 | `Snapshot()` | Full map when you need more than one field |
-| `ResumePayload` | Set when re-entering after `ResumeAsync` |
+| `IsResume` | True on the first superstep after `ResumeAsync` (even if payload is null) |
+| `ResumeKind` | `Command.Kind` (`approve` / `reject` / `update`) on that first resume superstep |
+| `ResumePayload` | Command answer when re-entering after `ResumeAsync`; never the interrupt ask |
 | `TaskPayload` | Set when this task was scheduled via `Send` |
 
 Nodes in the **same superstep** never see each other’s writes. If that feels

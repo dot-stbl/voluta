@@ -14,11 +14,17 @@ namespace Voluta.Runtime.Engine.Support;
 /// </summary>
 internal static class RunEngineExecution
 {
+    /// <summary>
+    ///     Per-task resume map lookup: key present (even with a null payload) is a resume.
+    /// </summary>
+    internal readonly record struct ResumeResolution(object? Payload, bool IsResume);
+
     public static async Task<ReadyExecutionOutcome> TryExecuteReadyAsync(
         GraphTopology topology,
         IReadOnlyList<ReadyTask> orderedReady,
         IReadOnlyDictionary<string, object?> snapshot,
         IReadOnlyDictionary<string, object?>? resumeByTaskId,
+        string? resumeKind,
         string threadId,
         Func<string, IStreamWriter>? streamWriterFactory,
         CancellationToken cancellationToken)
@@ -27,11 +33,14 @@ internal static class RunEngineExecution
         {
             if (orderedReady.Count == 1)
             {
+                var resume = ResolveResume(resumeByTaskId, orderedReady[0].TaskId);
                 var single = await RunEngineExecutionHelpers.ExecuteOneAsync(
                     topology,
                     orderedReady[0],
                     snapshot,
-                    RunEngineExecutionHelpers.ResolveResumePayload(resumeByTaskId, orderedReady[0].TaskId),
+                    resume.Payload,
+                    resume.IsResume,
+                    resume.IsResume ? resumeKind : null,
                     threadId,
                     streamWriterFactory,
                     cancellationToken);
@@ -43,11 +52,14 @@ internal static class RunEngineExecution
             for (var index = 0; index < orderedReady.Count; index++)
             {
                 var readyTask = orderedReady[index];
+                var resume = ResolveResume(resumeByTaskId, readyTask.TaskId);
                 tasks[index] = RunEngineExecutionHelpers.ExecuteOneAsync(
                     topology,
                     readyTask,
                     snapshot,
-                    RunEngineExecutionHelpers.ResolveResumePayload(resumeByTaskId, readyTask.TaskId),
+                    resume.Payload,
+                    resume.IsResume,
+                    resume.IsResume ? resumeKind : null,
                     threadId,
                     streamWriterFactory,
                     cancellationToken);
@@ -133,6 +145,18 @@ internal static class RunEngineExecution
 
         return writes;
     }
+
+    /// <summary>
+    ///     Per-task resume map lookup: key present (even with a null payload) is a resume.
+    /// </summary>
+    public static ResumeResolution ResolveResume(
+        IReadOnlyDictionary<string, object?>? resumeByTaskId,
+        string taskId)
+    {
+        return resumeByTaskId is not null && resumeByTaskId.TryGetValue(taskId, out var payload)
+            ? new ResumeResolution(payload, IsResume: true)
+            : new ResumeResolution(null, IsResume: false);
+    }
 }
 
 /// <summary>
@@ -140,20 +164,13 @@ internal static class RunEngineExecution
 /// </summary>
 file static class RunEngineExecutionHelpers
 {
-    public static object? ResolveResumePayload(
-        IReadOnlyDictionary<string, object?>? resumeByTaskId,
-        string taskId)
-    {
-        return resumeByTaskId is not null && resumeByTaskId.TryGetValue(taskId, out var payload)
-            ? payload
-            : null;
-    }
-
     public static async Task<NodeExecution> ExecuteOneAsync(
         GraphTopology topology,
         ReadyTask readyTask,
         IReadOnlyDictionary<string, object?> snapshot,
         object? resumePayload,
+        bool isResume,
+        string? resumeKind,
         string threadId,
         Func<string, IStreamWriter>? streamWriterFactory,
         CancellationToken cancellationToken)
@@ -178,7 +195,9 @@ file static class RunEngineExecutionHelpers
             topology.Services,
             threadId,
             readyTask.TaskId,
-            streamWriter);
+            streamWriter,
+            isResume,
+            resumeKind);
         try
         {
             var result = await handler(context, cancellationToken);

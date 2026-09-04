@@ -16,7 +16,8 @@ not as “block the thread until someone types in the console.”
 A node returns `NodeResult.Interrupt(payload)`. The run **stops**. The
 checkpoint stores `Status = Interrupted` and the payload. Later — same process
 or another — something calls `ResumeAsync` with a `Command`. The node re-enters
-with `ResumePayload` set and decides what to write next.
+with `IsResume` true (and `ResumePayload` set to the Command answer) and decides
+what to write next.
 
 ## Why not exceptions?
 
@@ -72,13 +73,13 @@ feature: an HTTP handler tomorrow can approve what a worker paused today.
 ```csharp
 static Task<NodeResult> GateNodeAsync(GraphContext context, CancellationToken cancellationToken)
 {
-    if (context.ResumePayload is null)
+    if (!context.IsResume)
     {
         return Task.FromResult<NodeResult>(
             NodeResult.Interrupt(new { action = "transfer", amount = 50, currency = "USD" }));
     }
 
-    // ResumePayload / Command informed this re-entry
+    // IsResume / ResumeKind / ResumePayload informed this re-entry
     return Task.FromResult<NodeResult>(
         NodeResult.Continue(new ChannelWrite("messages", "gate: transfer approved")));
 }

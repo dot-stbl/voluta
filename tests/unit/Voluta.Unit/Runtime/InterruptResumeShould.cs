@@ -5,6 +5,7 @@ using Voluta.Abstractions.Runtime;
 using Voluta.Abstractions.Streaming;
 using Voluta.Checkpoint;
 using Voluta.Exceptions.Run;
+using Voluta.Graph;
 using Voluta.Graph.Builder;
 using Xunit;
 
@@ -25,7 +26,7 @@ public sealed class InterruptResumeShould
                 (context, _) =>
                 {
                     phase++;
-                    return context.ResumePayload is null && phase == 1
+                    return !context.IsResume && phase == 1
                         ? Task.FromResult<NodeResult>(NodeResult.Interrupt(new { amount = 50 }))
                         : Task.FromResult<NodeResult>(
                             NodeResult.Continue(new ChannelWrite("messages", "approved")));
@@ -101,7 +102,7 @@ public sealed class InterruptResumeShould
             .AddChannel("messages", ChannelKind.Append)
             .AddNode(
                 "gate",
-                (context, _) => context.ResumePayload is null
+                static (context, _) => !context.IsResume
                     ? Task.FromResult<NodeResult>(NodeResult.Interrupt(new { need = "signoff" }))
                     : Task.FromResult<NodeResult>(
                         NodeResult.Continue(
@@ -135,7 +136,7 @@ public sealed class InterruptResumeShould
             .AddChannel("decision", ChannelKind.LastValue)
             .AddNode(
                 "gate",
-                (context, _) => context.ResumePayload is null
+                static (context, _) => !context.IsResume
                     ? Task.FromResult<NodeResult>(NodeResult.Interrupt("need-decision"))
                     : Task.FromResult<NodeResult>(
                         NodeResult.Continue(
@@ -187,5 +188,112 @@ public sealed class InterruptResumeShould
         var payloadText = terminal.Payload!.ToString();
         payloadText.ShouldNotBeNull();
         payloadText.ShouldContain("amount");
+    }
+
+    [Fact(DisplayName = "Given interrupted gate, when Resume with Approve() null payload, then IsResume is true and gate does not interrupt again")]
+    public async Task NullPayloadApproveIsResumeAndDoesNotReinterrupt()
+    {
+        var checkpointer = new InMemoryCheckpointer();
+        GraphContext? resumeContext = null;
+        var graph = new StateGraph()
+            .AddChannel("messages", ChannelKind.Append)
+            .AddNode(
+                "gate",
+                (context, _) =>
+                {
+                    if (context.IsResume)
+                    {
+                        resumeContext = context;
+                        return Task.FromResult<NodeResult>(
+                            NodeResult.Continue(new ChannelWrite("messages", "approved-null")));
+                    }
+
+                    return Task.FromResult<NodeResult>(NodeResult.Interrupt(new { need = "signoff" }));
+                })
+            .AddEdge(GraphConstants.Start, "gate")
+            .AddEdge("gate", GraphConstants.End)
+            .Compile(checkpointer);
+
+        var interrupted = await graph.InvokeAsync(
+            [],
+            new RunOptions { ThreadId = "null-payload-1", StreamMode = StreamMode.Events });
+        interrupted.Kind.ShouldBe(StreamEventKind.Interrupt);
+
+        var terminal = await graph.ResumeInvokeAsync("null-payload-1", Command.Approve());
+
+        terminal.Kind.ShouldBe(StreamEventKind.End);
+        resumeContext.ShouldNotBeNull();
+        resumeContext.IsResume.ShouldBeTrue();
+        resumeContext.ResumePayload.ShouldBeNull();
+        resumeContext.ResumeKind.ShouldBe(Command.Kinds.Approve);
+        var done = await checkpointer.GetAsync("null-payload-1");
+        done!.Status.ShouldBe(GraphRunStatus.Done);
+        var messages = done.ChannelValues["messages"].ShouldBeOfType<List<object?>>();
+        messages.ShouldContain("approved-null");
+    }
+
+    [Theory(DisplayName = "Given interrupted gate, when Resume with Command, then ResumeKind matches Command.Kind")]
+    [InlineData(Command.Kinds.Approve)]
+    [InlineData(Command.Kinds.Reject)]
+    public async Task ResumeKindMatchesCommand(string kind)
+    {
+        var checkpointer = new InMemoryCheckpointer();
+        string? seenKind = null;
+        var graph = new StateGraph()
+            .AddNode(
+                "gate",
+                (context, _) =>
+                {
+                    if (!context.IsResume)
+                    {
+                        return Task.FromResult<NodeResult>(NodeResult.Interrupt("wait"));
+                    }
+
+                    seenKind = context.ResumeKind;
+                    return Task.FromResult<NodeResult>(NodeResult.Continue());
+                })
+            .AddEdge(GraphConstants.Start, "gate")
+            .AddEdge("gate", GraphConstants.End)
+            .Compile(checkpointer);
+
+        await graph.InvokeAsync(
+            [],
+            new RunOptions { ThreadId = $"kind-{kind}", StreamMode = StreamMode.Events });
+
+        var command = kind == Command.Kinds.Reject
+            ? Command.Reject("no")
+            : Command.Approve("ok");
+        var terminal = await graph.ResumeInvokeAsync($"kind-{kind}", command);
+
+        terminal.Kind.ShouldBe(StreamEventKind.End);
+        seenKind.ShouldBe(kind);
+    }
+
+    [Fact(DisplayName = "Given first Invoke, when gate runs, then IsResume is false")]
+    public async Task FirstInvokeIsNotResume()
+    {
+        var checkpointer = new InMemoryCheckpointer();
+        var sawResume = false;
+        var graph = new StateGraph()
+            .AddNode(
+                "gate",
+                (context, _) =>
+                {
+                    sawResume = context.IsResume;
+                    return Task.FromResult<NodeResult>(
+                        context.IsResume
+                            ? NodeResult.Continue()
+                            : NodeResult.Interrupt("wait"));
+                })
+            .AddEdge(GraphConstants.Start, "gate")
+            .AddEdge("gate", GraphConstants.End)
+            .Compile(checkpointer);
+
+        var interrupted = await graph.InvokeAsync(
+            [],
+            new RunOptions { ThreadId = "first-invoke-1", StreamMode = StreamMode.Events });
+
+        interrupted.Kind.ShouldBe(StreamEventKind.Interrupt);
+        sawResume.ShouldBeFalse();
     }
 }

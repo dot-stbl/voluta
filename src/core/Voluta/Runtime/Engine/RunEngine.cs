@@ -1,11 +1,9 @@
-using System.Diagnostics;
 using Voluta.Abstractions.Channels;
 using Voluta.Abstractions.Checkpoint;
 using Voluta.Abstractions.Results;
 using Voluta.Abstractions.Runtime;
 using Voluta.Abstractions.Streaming;
 using Voluta.Diagnostics;
-using Voluta.Exceptions;
 using Voluta.Exceptions.Run;
 using Voluta.Graph;
 using Voluta.Runtime.Engine.Streaming;
@@ -34,7 +32,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
         CancellationToken cancellationToken = default)
     {
         var store = new ChannelStore(topology.Channels);
-        var inputList = input as IList<ChannelWrite> ?? input.ToList();
+        var inputList = input as IList<ChannelWrite> ?? [.. input];
         if (inputList.Count > 0)
         {
             store.ApplyInputWrites(inputList);
@@ -77,6 +75,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                            step,
                            lastNode,
                            resumeByTaskId: null,
+                           resumeKind: null,
                            cancellationToken))
         {
             yield return item;
@@ -93,7 +92,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
         [System.Runtime.CompilerServices.EnumeratorCancellation]
         CancellationToken cancellationToken = default)
     {
-        Runtime.CommandTaxonomy.EnsureValid(command);
+        CommandTaxonomy.EnsureValid(command);
 
         var checkpoint = await checkpointer.GetAsync(threadId, cancellationToken) ??
                          throw new GraphInvalidResumeException(
@@ -105,7 +104,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
         }
 
         var pendingInterrupts = RunEngineLoopHelpers.ResolvePendingInterrupts(checkpoint);
-        Runtime.CommandTaxonomy.EnsureMultiInterruptResumes(command, pendingInterrupts);
+        CommandTaxonomy.EnsureMultiInterruptResumes(command, pendingInterrupts);
 
         var store = new ChannelStore(topology.Channels);
         store.Restore(checkpoint.ChannelValues, checkpoint.ChannelVersions, checkpoint.VersionsSeen);
@@ -129,7 +128,9 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                     topology,
                     GraphConstants.Start,
                     store.SnapshotValues(),
-                    command.Payload);
+                    command.Payload,
+                    isResume: true,
+                    resumeKind: command.Kind);
             readyTasks = RunEngineRouting.ToPullTasks(topology, nextNodes);
         }
 
@@ -155,6 +156,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                                remainingAfterResume,
                                checkpoint,
                                resumeByTaskId,
+                               command.Kind,
                                cancellationToken))
             {
                 yield return item;
@@ -170,6 +172,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                            checkpoint.Step,
                            checkpoint.LastNode,
                            resumeByTaskId,
+                           command.Kind,
                            cancellationToken))
         {
             yield return item;
@@ -251,6 +254,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                            checkpoint.Step,
                            checkpoint.LastNode,
                            resumeByTaskId: null,
+                           resumeKind: null,
                            cancellationToken))
         {
             yield return item;
@@ -268,6 +272,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
         IReadOnlyList<PendingInterrupt> remainingInterrupts,
         CheckpointSnapshot checkpoint,
         IReadOnlyDictionary<string, object?> resumeByTaskId,
+        string? resumeKind,
         [System.Runtime.CompilerServices.EnumeratorCancellation]
         CancellationToken cancellationToken)
     {
@@ -305,6 +310,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                            step,
                            checkpoint.LastNode,
                            resumeByTaskId,
+                           resumeKind,
                            cancellationToken))
         {
             if (item.LiveEvent is { } live)
@@ -454,8 +460,9 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                                readyTasks,
                                step,
                                lastNode,
-                               resumeByTaskId: null,
-                               cancellationToken))
+                            resumeByTaskId: null,
+                            resumeKind: null,
+                            cancellationToken))
             {
                 if (item.LiveEvent is { } live)
                 {
@@ -501,6 +508,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
         long step,
         string? lastNode,
         IReadOnlyDictionary<string, object?>? resumeByTaskId,
+        string? resumeKind,
         [System.Runtime.CompilerServices.EnumeratorCancellation]
         CancellationToken cancellationToken)
     {
@@ -562,6 +570,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
             // readyTasks from ToPullTasks are already sorted; re-sort only when sends merge in.
             var orderedReady = readyTasks;
             var payloadsForStep = isFirstResumeStep ? resumeByTaskId : null;
+            var kindForStep = isFirstResumeStep ? resumeKind : null;
             isFirstResumeStep = false;
 
             // Superstep body runs concurrently with live Custom/Messages drain so tokens
@@ -575,6 +584,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                                step,
                                lastNode,
                                payloadsForStep,
+                               kindForStep,
                                cancellationToken))
             {
                 if (item.Commit is { } commit)
@@ -647,6 +657,7 @@ file static class RunEngineLoopHelpers
         long step,
         string? lastNode,
         IReadOnlyDictionary<string, object?>? resumeByTaskId,
+        string? resumeKind,
         [System.Runtime.CompilerServices.EnumeratorCancellation]
         CancellationToken cancellationToken)
     {
@@ -676,6 +687,7 @@ file static class RunEngineLoopHelpers
             step,
             lastNode,
             resumeByTaskId,
+            resumeKind,
             options.ThreadId,
             streamWriterFactory,
             cancellationToken);
@@ -722,6 +734,7 @@ file static class RunEngineLoopHelpers
         long step,
         string? lastNode,
         IReadOnlyDictionary<string, object?>? resumeByTaskId,
+        string? resumeKind,
         string threadId,
         Func<string, IStreamWriter>? streamWriterFactory,
         CancellationToken cancellationToken)
@@ -736,6 +749,7 @@ file static class RunEngineLoopHelpers
             orderedReady,
             preApplySnapshot,
             resumeByTaskId,
+            resumeKind,
             threadId,
             streamWriterFactory,
             cancellationToken);
@@ -810,7 +824,7 @@ file static class RunEngineLoopHelpers
             // (barrier holds until all pending interrupts resume).
             lastNode = pendingInterrupts[^1].NodeName;
             var nextNodeNames = DistinctNames(
-                pendingInterrupts.Select(static item => item.NodeName).ToList());
+                [.. pendingInterrupts.Select(static item => item.NodeName)]);
             var primaryPayload = pendingInterrupts[0].Payload;
             await checkpointer.PutAsync(
                 RunEngineSnapshots.Build(
@@ -892,12 +906,15 @@ file static class RunEngineLoopHelpers
         var pendingSends = new List<PendingSend>();
         foreach (var execution in executions)
         {
+            var resume = RunEngineExecution.ResolveResume(resumeByTaskId, execution.TaskId);
             scheduled.AddRange(
                 RunEngineRouting.ResolveNextNodes(
                     topology,
                     execution.NodeName,
                     postApplySnapshot,
-                    null));
+                    resume.Payload,
+                    resume.IsResume,
+                    resume.IsResume ? resumeKind : null));
 
             if (execution.Result is ContinueNodeResult continueResult)
             {
@@ -967,13 +984,13 @@ file static class RunEngineLoopHelpers
         {
             LastNode = lastNode,
             ReadyTasks = readyTasks,
-            StreamItems = RunEngineStreaming.EmitCommit(
+            StreamItems = [.. RunEngineStreaming.EmitCommit(
                 options.StreamMode,
                 step,
                 nodeNames,
                 writes,
                 store,
-                postApplySnapshot).ToList(),
+                postApplySnapshot)],
         };
     }
 

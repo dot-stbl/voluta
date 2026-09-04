@@ -30,10 +30,10 @@ using Voluta.Hosting.Worker;
 var builder = Host.CreateApplicationBuilder(args);
 builder.Logging.SetMinimumLevel(LogLevel.Information);
 
-builder.Services.AddVoluta(voluta =>
+builder.Services.AddVoluta(static voluta =>
 {
-    voluta.Checkpoints.UseInMemory();
-    voluta.Graph((_, checkpointer) => new StateGraph()
+    _ = voluta.Checkpoints.UseInMemory();
+    _ = voluta.Graph(static (_, checkpointer) => new StateGraph()
         .AddChannel("messages", ChannelKind.Append)
         .AddChannel("status", ChannelKind.LastValue)
         .AddNode("prepare", PrepareAsync)
@@ -65,7 +65,7 @@ static Task<NodeResult> GateAsync(GraphContext context, CancellationToken cancel
 {
     cancellationToken.ThrowIfCancellationRequested();
 
-    return context.ResumePayload is null
+    return !context.IsResume
         ? Task.FromResult<NodeResult>(
             NodeResult.Interrupt(new { action = "approve-payout", amount = 120, currency = "EUR" }))
         : Task.FromResult<NodeResult>(

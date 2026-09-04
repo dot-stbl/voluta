@@ -83,7 +83,7 @@ static Task<NodeResult> GateNodeAsync(GraphContext context, CancellationToken ca
 {
     cancellationToken.ThrowIfCancellationRequested();
 
-    if (context.ResumePayload is null)
+    if (!context.IsResume)
     {
         CliUi.Node("gate", "interrupting for human approval");
         return Task.FromResult<NodeResult>(
