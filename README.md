@@ -17,8 +17,11 @@ can pause a thread for days, then resume in another process.
 → AOT-ready core not a kitchen sink
 ```
 
-> **v0.3.0** is on NuGet. Public API is frozen (`PublicAPI.Shipped.txt`).
+> **v0.3.0** is on NuGet. Shipped surface is frozen (`PublicAPI.Shipped.txt`).
+> Host time-travel (`GetStateAsync` / `GetHistoryAsync` / `UpdateStateAsync` / `ForkAsync` / `Continue*`)
+> is available in 0.3.x but still listed in `PublicAPI.Unshipped.txt` (can still move).
 > `dotnet add package Voluta --version 0.3.0` — see [Quick Start](#quick-start).
+
 ## See it in action
 
 A ReAct-style loop (agent ⇄ tools) with no LLM — pure simulation so you can run it offline.
@@ -133,14 +136,24 @@ var done = await graph.ResumeInvokeAsync(
 <details>
 <summary><strong>Time-travel read (GetState / GetHistory)</strong></summary>
 
-Host-facing projection of checkpoints — no need to spelunk `ICheckpointer` C-shape fields:
+`ICheckpointer` is the storage seam (shipped). There is **no** `putWrites` — a put is always a full C-shape snapshot:
+
+| Method | Contract |
+|--------|----------|
+| `PutAsync(CheckpointSnapshot)` | Persist this snapshot (and its step in history when the provider supports it) |
+| `GetAsync(threadId)` | **Latest** snapshot only. Miss returns `null` (does not throw) |
+| `ListAsync(threadId)` | **Full** step history, oldest first. Providers that cannot list **must** throw `NotSupportedException` rather than return a silent partial |
+
+InMemory, File, EF, S3, and Redis all implement history. `IVolutaStore` is a separate cross-thread KV (`Put`/`Get`/`List`/`Delete` by namespace) — `ListAsync(namespace)` lists **all keys in that namespace**, not checkpoints.
+
+Host-facing projection — no need to spelunk C-shape fields. These methods are available in 0.3.x (`PublicAPI.Unshipped.txt`, not frozen):
 
 ```csharp
-// latest snapshot for ops / HTTP / UI
+// latest snapshot for ops / HTTP / UI  (wraps ICheckpointer.GetAsync)
 var state = await graph.GetStateAsync("order-9");
 // state?.Status, state?.Step, state?.Values, state?.InterruptPayload
 
-// full step history when the checkpointer supports List (InMemory, File, EF, S3)
+// full step history, oldest first  (wraps ICheckpointer.ListAsync)
 var history = await graph.GetHistoryAsync("order-9");
 // ordered by Step ascending; history[^1] matches GetState when present
 ```
@@ -152,7 +165,10 @@ Ops UI: `GET /voluta/api/threads/{id}/history` lists steps; inspector shows them
 <details>
 <summary><strong>Update state / fork / continue</strong></summary>
 
-Ops and support workflows can edit channel values and branch threads without re-invoking from scratch:
+Ops and support workflows can edit channel values and branch threads without re-invoking from scratch.
+There is **no** `putWrites`. Channel edits go through `UpdateStateAsync(threadId, IEnumerable<ChannelWrite>)`
+(available in 0.3.x, Unshipped): it loads the latest checkpoint, applies the same LastValue / Append
+reducers as runtime input seeding, and `Put`s a **new** history step.
 
 ```csharp
 // patch latest checkpoint (Append / LastValue reducers apply)
@@ -231,9 +247,15 @@ await graph.ResumeInvokeAsync("order-9", Command.Approve("ok"));
 ```
 
 Values serialize with `System.Text.Json` — prefer JSON-friendly types (strings, numbers, lists of
-primitives). For tests, `InMemoryCheckpointer` is enough; every storage implements
-`ICheckpointer` and can run `CheckpointerConformance.RunAllAsync`. Provider types
-(`FileCheckpointer`, EF, S3) are constructed via `Use*` only — not `new`.
+primitives). **Durable rehydrate is lossy:** File / EF / S3 / Redis `FromElement` restores
+`string` / `bool` / `long` / `double` and arrays as `List<object?>`. JSON objects (`{}`) become
+`GetRawText()` — a JSON **string**, not the original CLR type and usually not `JsonElement`.
+`InMemoryCheckpointer` keeps CLR references (no JSON). Do not expect typed restore of custom
+records after a process restart.
+
+For tests, `InMemoryCheckpointer` is enough; every storage implements `ICheckpointer` and can
+run `CheckpointerConformance.RunAllAsync`. Provider types (`FileCheckpointer`, EF, S3, Redis)
+are constructed via `Use*` only — not `new`.
 
 </details>
 
@@ -778,11 +800,15 @@ dotnet run --project samples/UiHost             # Studio: http://localhost:5188/
 
 Stated plainly so you can judge the fit:
 
-- **PublicAPI surface can still move** before a major bump (tracked with PublicApiAnalyzers);
-  shipped surface up to `v0.3.0` is frozen in `PublicAPI.Shipped.txt`.
+- **PublicAPI surface can still move** before a major bump (tracked with PublicApiAnalyzers).
+  Shipped surface up to `v0.3.0` is frozen in `PublicAPI.Shipped.txt`. Host time-travel
+  (`GetStateAsync` / `GetHistoryAsync` / `UpdateStateAsync` / `ForkAsync` / `Continue*`)
+  is available in 0.3.x but still Unshipped.
 - **Studio SPA auth** is not built in; `/api/v1` supports an optional single API key
   (`StudioApiOptions.ApiKey`). Multi-tenant auth is out of scope for now.
-- **Checkpoint serde** is best-effort JSON for channel values; versioning/evolution is still open.
+- **Checkpoint serde** is best-effort JSON; durable restore does not round-trip CLR types
+  (see [Durable file checkpoint](#durable-file-checkpoint-survive-process-restart)).
+  Versioning/evolution is still open.
 - **MCP in samples** is a light HTTP bridge (inlined in MarketingAgent), not a product package;
   real MCP is `ModelContextProtocol` (+ AspNetCore) on top of Voluta.
 - **No built-in coding agent** (bash/edit/permissions) — Voluta is the graph runtime, not Claude Code.

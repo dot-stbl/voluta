@@ -38,9 +38,17 @@ Task<IReadOnlyList<CheckpointSnapshot>> ListAsync(string threadId, CancellationT
 
 | Method | Contract |
 |--------|----------|
-| `PutAsync` | Persist this snapshot for the thread |
-| `GetAsync` | Latest snapshot, or **null** if never written |
-| `ListAsync` | History ascending by step; if you can’t, throw `NotSupportedException` |
+| `PutAsync(CheckpointSnapshot)` | Persist this **full** C-shape snapshot. There is **no** `putWrites` |
+| `GetAsync(threadId)` | **Latest** snapshot only, or **null** if never written (miss does not throw) |
+| `ListAsync(threadId)` | **Full** history, oldest step first. If you can’t list, throw `NotSupportedException` — never a silent partial |
+
+InMemory, File, EF, S3, and Redis all implement history. Channel edits from a host are
+`CompiledGraph.UpdateStateAsync(threadId, IEnumerable<ChannelWrite>)` — not a checkpointer
+method. Host reads: `GetStateAsync` (latest `ThreadSnapshot`) / `GetHistoryAsync` (all
+steps). Those façade methods are available in 0.3.x but still Unshipped.
+
+`IVolutaStore` is a different seam (cross-thread KV). Its `ListAsync(namespace)` lists
+**all keys in that namespace**, not checkpoints.
 
 Optional **thread discovery** (ops UI, multi-host): implement
 `IThreadDiscovery.ListThreadIdsAsync` on the same type as `ICheckpointer`.
@@ -112,8 +120,13 @@ If you already have EF + Postgres, **stay on EF** — do not run both for the sa
 app without a clear reason.
 
 Provider types are constructed via `Use*` only — not `new` from app code.
-Prefer JSON-friendly channel values (strings, numbers, lists of primitives);
-complex CLR graphs may not round-trip (wire v1 allow-list on durable providers).
+Prefer JSON-friendly channel values (strings, numbers, lists of primitives).
+**Durable rehydrate is lossy:** File / EF / S3 / Redis `FromElement` restores
+`string` / `bool` / `long` / `double` and arrays as `List<object?>`. JSON objects
+(`{}`) become `GetRawText()` — a JSON **string**, not the original CLR type and
+usually not `JsonElement`. InMemory keeps CLR references (no JSON). Do not expect
+typed restore of custom records after a process restart. Unsupported CLR graphs
+fail Put with `checkpoint.unsupported_value_type` (wire v1 allow-list).
 
 In-memory is not “fake voluta.” It is the same protocol with a store that dies
 with the process — fine until durability is a product requirement.
