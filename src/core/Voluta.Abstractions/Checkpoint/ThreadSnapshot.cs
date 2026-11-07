@@ -66,4 +66,11 @@ public sealed class ThreadSnapshot
     ///     (null otherwise). Additive field — null default.
     /// </summary>
     public string? CancelReason { get; init; }
+
+    /// <summary>
+    ///     Typed reason behind a non-HITL pause (static pause point / guard stop);
+    ///     <see cref="Runtime.RunStopReason.None" /> for regular HITL interrupts. Additive
+    ///     field — mirrors <see cref="CheckpointSnapshot.StopReason" />.
+    /// </summary>
+    public RunStopReason StopReason { get; init; }
 }

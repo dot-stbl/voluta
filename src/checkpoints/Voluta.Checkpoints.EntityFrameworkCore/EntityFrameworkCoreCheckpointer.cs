@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Voluta.Abstractions.Checkpoint;
 using Voluta.Abstractions.Diagnostics;
 using Voluta.Abstractions.Runtime;
+using Voluta.Abstractions.Serialization;
 using Voluta.Checkpoints.EntityFrameworkCore.Wire;
 
 namespace Voluta.Checkpoints.EntityFrameworkCore;
@@ -18,7 +19,7 @@ namespace Voluta.Checkpoints.EntityFrameworkCore;
 ///     Channel values must be wire-format v1 allow-listed shapes; unsupported types fail Put with
 ///     <c>checkpoint.unsupported_value_type</c>.
 /// </remarks>
-public sealed class EntityFrameworkCoreCheckpointer<TContext> : ICheckpointer, IThreadDiscovery
+public sealed class EntityFrameworkCoreCheckpointer<TContext> : ICheckpointer, IThreadDiscovery, IRegistryAwareCheckpointer
     where TContext : DbContext, IVolutaCheckpointDbContext
 {
     private readonly IDbContextFactory<TContext> factory;
@@ -37,6 +38,12 @@ public sealed class EntityFrameworkCoreCheckpointer<TContext> : ICheckpointer, I
     {
         this.factory = factory;
     }
+
+    /// <summary>
+    ///     Host type registry (v050, <see cref="IRegistryAwareCheckpointer" />): assigned by
+    ///     the engine from <c>CompileOptions.CheckpointTypes</c>. Null — unstamped v1 behavior.
+    /// </summary>
+    public CheckpointTypeRegistry? TypeRegistry { get; set; }
 
     /// <inheritdoc />
     /// <remarks>
@@ -67,14 +74,25 @@ public sealed class EntityFrameworkCoreCheckpointer<TContext> : ICheckpointer, I
     ///         at the host's <c>SaveChanges</c> either.
     ///     </para>
     /// </remarks>
-    public async Task PutAsync(
+    public Task PutAsync(
+        CheckpointSnapshot snapshot,
+        long? expectedParentStep,
+        ICheckpointUnitOfWork? unitOfWork,
+        CancellationToken cancellationToken)
+    {
+        return EfCheckpointRegistryScope.RunAsync(
+            TypeRegistry,
+            () => PutCoreAsync(snapshot, expectedParentStep, unitOfWork, cancellationToken));
+    }
+
+    private async Task PutCoreAsync(
         CheckpointSnapshot snapshot,
         long? expectedParentStep,
         ICheckpointUnitOfWork? unitOfWork,
         CancellationToken cancellationToken)
     {
         // Validate wire v1 allow-list before EF conversion so CheckpointStoreException is not wrapped.
-        _ = EfCheckpointDocument.FromSnapshot(snapshot);
+        EfCheckpointDocument.FromSnapshot(snapshot, TypeRegistry);
         var guarded = expectedParentStep is not null;
 
         if (unitOfWork is not null && unitOfWork.TryGetResource<TContext>(out var hostDb))
@@ -304,7 +322,16 @@ public sealed class EntityFrameworkCoreCheckpointer<TContext> : ICheckpointer, I
     }
 
     /// <inheritdoc />
-    public async Task<CheckpointSnapshot?> GetAsync(
+    public Task<CheckpointSnapshot?> GetAsync(
+        string threadId,
+        CancellationToken cancellationToken = default)
+    {
+        return EfCheckpointRegistryScope.RunAsync(
+            TypeRegistry,
+            () => GetCoreAsync(threadId, cancellationToken));
+    }
+
+    private async Task<CheckpointSnapshot?> GetCoreAsync(
         string threadId,
         CancellationToken cancellationToken = default)
     {
@@ -330,7 +357,16 @@ public sealed class EntityFrameworkCoreCheckpointer<TContext> : ICheckpointer, I
     }
 
     /// <inheritdoc />
-    public async Task<IReadOnlyList<CheckpointSnapshot>> ListAsync(
+    public Task<IReadOnlyList<CheckpointSnapshot>> ListAsync(
+        string threadId,
+        CancellationToken cancellationToken = default)
+    {
+        return EfCheckpointRegistryScope.RunAsync(
+            TypeRegistry,
+            () => ListCoreAsync(threadId, cancellationToken));
+    }
+
+    private async Task<IReadOnlyList<CheckpointSnapshot>> ListCoreAsync(
         string threadId,
         CancellationToken cancellationToken = default)
     {
@@ -389,7 +425,7 @@ public sealed class EntityFrameworkCoreCheckpointer<TContext> : ICheckpointer, I
 ///     Host registration: <c>v.Checkpoints.UseEntityFrameworkCore()</c>.
 ///     Direct construction is internal for conformance / unit tests only.
 /// </remarks>
-public sealed class EntityFrameworkCoreCheckpointer : ICheckpointer, IThreadDiscovery
+public sealed class EntityFrameworkCoreCheckpointer : ICheckpointer, IThreadDiscovery, IRegistryAwareCheckpointer
 {
     private readonly EntityFrameworkCoreCheckpointer<VolutaCheckpointDbContext> inner;
 
@@ -400,6 +436,16 @@ public sealed class EntityFrameworkCoreCheckpointer : ICheckpointer, IThreadDisc
     internal EntityFrameworkCoreCheckpointer(IDbContextFactory<VolutaCheckpointDbContext> factory)
     {
         inner = new EntityFrameworkCoreCheckpointer<VolutaCheckpointDbContext>(factory);
+    }
+
+    /// <inheritdoc />
+    /// <summary>
+    ///     Host type registry (v050) — delegated to the generic checkpointer.
+    /// </summary>
+    public CheckpointTypeRegistry? TypeRegistry
+    {
+        get => inner.TypeRegistry;
+        set => inner.TypeRegistry = value;
     }
 
     /// <inheritdoc />

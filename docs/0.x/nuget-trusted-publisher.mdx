@@ -1,0 +1,67 @@
+---
+title: nuget.org trusted publisher (OIDC)
+description: The 3 steps to switch releases from an API key to OIDC trusted publishing on nuget.org.
+product: voluta
+version: "0.x"
+sidebar:
+  label: Trusted publisher
+  order: 91
+  group: Guides
+  badge: "0.5"
+---
+
+Voluta's release pipeline (`publish.yml`) pushes packages with an API key
+(`secrets.NUGET_API_KEY`) by default. The pipeline also ships an **optional OIDC
+trusted-publishing branch** behind the repository variable `NUGET_OIDC` — flip it
+once, and the next tag release stops using the API key. Switching takes three
+steps.
+
+## Step 1 — nuget.org: register the trusted publishing policy
+
+Sign in to nuget.org → account settings → **Trusted Publishing** and add a
+policy per package ID prefix the product publishes (`Voluta`, `Voluta.*`):
+
+- **Owner / repository**: `dot-stbl/voluta`
+- **Workflow file**: `publish.yml`
+- **Environment**: `nuget` (the environment the workflow already declares)
+
+nuget.org verifies the OIDC token that GitHub Actions issues for that exact
+(workflow, repository, environment) combination, then accepts the push without a
+static API key.
+
+## Step 2 — repository: create the environment and flip the flag
+
+In the GitHub repository settings:
+
+1. **Environments** → create an environment named `nuget` (the workflow's
+   `environment:` already references it; protect it as you see fit — no
+   reviewers required).
+2. **Variables and secrets** → **Variables** → create a repository variable
+   `NUGET_OIDC` with the value `true`.
+
+That variable is the only switch: the push steps in `publish.yml` are mutually
+exclusive branches keyed on `vars.NUGET_OIDC == 'true'`.
+
+Also add the secret `NUGET_USER` = your nuget.org **account name** — the
+`nuget/login@v1` action needs it to mint the short-lived API key from the OIDC
+token.
+
+## Step 3 — release, verify, revoke the API key
+
+Cut the next release the usual way (`v*.*.*` tag):
+
+1. watch the run — the **NuGet OIDC login** step must mint a key and the push
+   must succeed;
+2. confirm the packages on nuget.org show the new version.
+
+Once a release has succeeded on the OIDC branch, revoke `NUGET_API_KEY`
+(repository secret) so the static credential is gone. To roll back, set
+`NUGET_OIDC` to `false` (or delete the variable) — the API-key branch resumes.
+
+## What the tag-path check does not change
+
+- The tag↔package version verification (`verify tag vs packages`) runs before
+  either credential branch and is independent of the authentication mode.
+- `workflow_dispatch` with `dry_run=false` pushes through the same branches;
+  `dry_run=true` never pushes.
+- Release notes still come from `CHANGELOG.md`, falling back to generated notes.

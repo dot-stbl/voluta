@@ -144,3 +144,68 @@ Voluta.Abstractions.Checkpoint.ThreadSnapshot.GraphId.get -> string?
 Voluta.Abstractions.Checkpoint.ThreadSnapshot.GraphId.init -> void
 Voluta.Abstractions.Checkpoint.ThreadSnapshot.GraphVersion.get -> string?
 Voluta.Abstractions.Checkpoint.ThreadSnapshot.GraphVersion.init -> void
+Voluta.Abstractions.Checkpoint.ThreadSnapshot.StopReason.get -> Voluta.Abstractions.Runtime.RunStopReason
+Voluta.Abstractions.Checkpoint.ThreadSnapshot.StopReason.init -> void
+
+const Voluta.Abstractions.Diagnostics.VolutaErrorCodes.GraphInvalidRetryPolicy = "graph.invalid_retry_policy" -> string!
+Voluta.Abstractions.Checkpoint.CheckpointSnapshot.CompletedTaskIds.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Voluta.Abstractions.Checkpoint.CheckpointSnapshot.CompletedTaskIds.init -> void
+Voluta.Abstractions.Checkpoint.CheckpointSnapshot.JoinArrivals.get -> System.Collections.Generic.IReadOnlyDictionary<string!, System.Collections.Generic.IReadOnlyList<string!>!>!
+Voluta.Abstractions.Checkpoint.CheckpointSnapshot.JoinArrivals.init -> void
+Voluta.Abstractions.Checkpoint.CheckpointSnapshot.StopReason.get -> Voluta.Abstractions.Runtime.RunStopReason
+Voluta.Abstractions.Checkpoint.CheckpointSnapshot.StopReason.init -> void
+Voluta.Abstractions.Checkpoint.CheckpointSnapshot.TaskAttempts.get -> System.Collections.Generic.IReadOnlyDictionary<string!, int>!
+Voluta.Abstractions.Checkpoint.CheckpointSnapshot.TaskAttempts.init -> void
+Voluta.Abstractions.Checkpoint.IRegistryAwareCheckpointer
+Voluta.Abstractions.Checkpoint.IRegistryAwareCheckpointer.TypeRegistry.get -> Voluta.Abstractions.Serialization.CheckpointTypeRegistry?
+Voluta.Abstractions.Checkpoint.IRegistryAwareCheckpointer.TypeRegistry.set -> void
+Voluta.Abstractions.Runtime.IRunGuard
+Voluta.Abstractions.Runtime.IRunGuard.Evaluate(Voluta.Abstractions.Runtime.RunGuardContext! context) -> Voluta.Abstractions.Runtime.RunGuardDecision
+Voluta.Abstractions.Runtime.RetryPolicy
+Voluta.Abstractions.Runtime.RetryPolicy.BaseDelay.get -> System.TimeSpan
+Voluta.Abstractions.Runtime.RetryPolicy.DelayFor(int completedAttempt) -> System.TimeSpan
+Voluta.Abstractions.Runtime.RetryPolicy.MaxAttempts.get -> int
+Voluta.Abstractions.Runtime.RetryPolicy.RetryOn.get -> System.Func<System.Exception!, bool>?
+Voluta.Abstractions.Runtime.RetryPolicy.ShouldRetry(System.Exception! exception) -> bool
+Voluta.Abstractions.Runtime.RunGuardAction
+Voluta.Abstractions.Runtime.RunGuardAction.Continue = 0 -> Voluta.Abstractions.Runtime.RunGuardAction
+Voluta.Abstractions.Runtime.RunGuardAction.Stop = 1 -> Voluta.Abstractions.Runtime.RunGuardAction
+Voluta.Abstractions.Runtime.RunGuardContext
+Voluta.Abstractions.Runtime.RunGuardContext.CompletedSteps.get -> long
+Voluta.Abstractions.Runtime.RunGuardContext.CompletedSteps.init -> void
+Voluta.Abstractions.Runtime.RunGuardContext.NextStep.get -> long
+Voluta.Abstractions.Runtime.RunGuardContext.NextStep.init -> void
+Voluta.Abstractions.Runtime.RunGuardContext.RunGuardContext() -> void
+Voluta.Abstractions.Runtime.RunGuardContext.StartedAt.get -> System.DateTimeOffset
+Voluta.Abstractions.Runtime.RunGuardContext.StartedAt.init -> void
+Voluta.Abstractions.Runtime.RunGuardDecision
+Voluta.Abstractions.Runtime.RunGuardDecision.Action.get -> Voluta.Abstractions.Runtime.RunGuardAction
+Voluta.Abstractions.Runtime.RunGuardDecision.Action.init -> void
+static Voluta.Abstractions.Runtime.RunGuardDecision.Continue.get -> Voluta.Abstractions.Runtime.RunGuardDecision
+Voluta.Abstractions.Runtime.RunGuardDecision.Reason.get -> string?
+Voluta.Abstractions.Runtime.RunGuardDecision.Reason.init -> void
+Voluta.Abstractions.Runtime.RunGuardDecision.RunGuardDecision() -> void
+Voluta.Abstractions.Runtime.RunGuardDecision.RunGuardDecision(Voluta.Abstractions.Runtime.RunGuardAction Action, string? Reason) -> void
+static Voluta.Abstractions.Runtime.RunGuardDecision.Stop(string! reason) -> Voluta.Abstractions.Runtime.RunGuardDecision
+Voluta.Abstractions.Runtime.RunGuards
+const Voluta.Abstractions.Runtime.RunGuards.BudgetExhausted = "budget_exhausted" -> string!
+const Voluta.Abstractions.Runtime.RunGuards.DeadlineExceeded = "deadline_exceeded" -> string!
+Voluta.Abstractions.Runtime.RunStopReason
+Voluta.Abstractions.Runtime.RunStopReason.BudgetExhausted = 1 -> Voluta.Abstractions.Runtime.RunStopReason
+Voluta.Abstractions.Runtime.RunStopReason.DeadlineExceeded = 2 -> Voluta.Abstractions.Runtime.RunStopReason
+Voluta.Abstractions.Runtime.RunStopReason.None = 0 -> Voluta.Abstractions.Runtime.RunStopReason
+Voluta.Abstractions.Runtime.RunStopReason.StaticAfter = 4 -> Voluta.Abstractions.Runtime.RunStopReason
+Voluta.Abstractions.Runtime.RunStopReason.StaticBefore = 3 -> Voluta.Abstractions.Runtime.RunStopReason
+Voluta.Abstractions.Serialization.CheckpointTypeRegistry
+Voluta.Abstractions.Serialization.CheckpointTypeRegistry.CheckpointTypeRegistry() -> void
+static Voluta.Abstractions.Serialization.CheckpointTypeRegistry.Empty.get -> Voluta.Abstractions.Serialization.CheckpointTypeRegistry!
+Voluta.Abstractions.Serialization.CheckpointTypeRegistry.Register<T>(string! typeId) -> Voluta.Abstractions.Serialization.CheckpointTypeRegistry!
+Voluta.Abstractions.Serialization.CheckpointTypeRegistry.Register(System.Type! runtimeType, string! typeId) -> Voluta.Abstractions.Serialization.CheckpointTypeRegistry!
+Voluta.Abstractions.Serialization.CheckpointTypeRegistry.TryGetTypeId(System.Type! runtimeType, out string? typeId) -> bool
+Voluta.Abstractions.Serialization.CheckpointTypeRegistry.TryResolveType(string! typeId, out System.Type? type) -> bool
+static Voluta.Abstractions.Runtime.RetryPolicy.Exponential(int maxAttempts, System.TimeSpan baseDelay, System.Func<System.Exception!, bool>? retryOn = null) -> Voluta.Abstractions.Runtime.RetryPolicy!
+static Voluta.Abstractions.Runtime.RunGuards.Budget(System.Func<Voluta.Abstractions.Runtime.RunGuardContext!, bool>! isExhausted) -> Voluta.Abstractions.Runtime.IRunGuard!
+static Voluta.Abstractions.Runtime.RunGuards.Deadline(System.DateTimeOffset at) -> Voluta.Abstractions.Runtime.IRunGuard!
+static Voluta.Abstractions.Runtime.RunGuards.Deadline(System.TimeSpan fromNow) -> Voluta.Abstractions.Runtime.IRunGuard!
+static Voluta.Abstractions.Runtime.RunGuards.Deadline(System.DateTimeOffset at, System.TimeProvider! timeProvider) -> Voluta.Abstractions.Runtime.IRunGuard!
+static Voluta.Abstractions.Runtime.RunGuards.Deadline(System.TimeSpan fromNow, System.TimeProvider! timeProvider) -> Voluta.Abstractions.Runtime.IRunGuard!

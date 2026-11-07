@@ -22,6 +22,7 @@ internal static class ThreadSnapshotMapping
             GraphId = snapshot.GraphId,
             GraphVersion = snapshot.GraphVersion,
             CancelReason = snapshot.CancelReason,
+            StopReason = snapshot.StopReason,
         };
     }
 }

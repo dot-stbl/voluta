@@ -19,7 +19,12 @@ internal static class RunEngineSnapshots
         object? interruptPayload,
         IReadOnlyDictionary<string, object?>? channelValues = null,
         IReadOnlyList<PendingInterrupt>? pendingInterrupts = null,
-        (string? GraphId, string? GraphVersion) identity = default)
+        (string? GraphId, string? GraphVersion) identity = default,
+        IReadOnlyList<PendingWrite>? pendingWrites = null,
+        IReadOnlyList<string>? completedTaskIds = null,
+        IReadOnlyDictionary<string, int>? taskAttempts = null,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? joinArrivals = null,
+        RunStopReason stopReason = RunStopReason.None)
     {
         var versions = store.Versions;
         var channelVersions = new Dictionary<string, long>(versions.Count, StringComparer.Ordinal);
@@ -36,7 +41,7 @@ internal static class RunEngineSnapshots
             ChannelValues = channelValues ?? store.SnapshotValues(),
             ChannelVersions = channelVersions,
             VersionsSeen = store.CloneVersionsSeen(),
-            PendingWrites = [],
+            PendingWrites = pendingWrites is { Count: > 0 } ? [.. pendingWrites] : [],
             PendingSends = [.. pendingSends],
             LastNode = lastNode,
             NextNodes = [.. nextNodes],
@@ -44,6 +49,14 @@ internal static class RunEngineSnapshots
             PendingInterrupts = pendingInterrupts is { Count: > 0 }
                 ? [.. pendingInterrupts]
                 : [],
+            CompletedTaskIds = completedTaskIds is { Count: > 0 } ? [.. completedTaskIds] : [],
+            TaskAttempts = taskAttempts is { Count: > 0 }
+                ? new Dictionary<string, int>(taskAttempts, StringComparer.Ordinal)
+                : new Dictionary<string, int>(StringComparer.Ordinal),
+            JoinArrivals = joinArrivals is { Count: > 0 }
+                ? new Dictionary<string, IReadOnlyList<string>>(joinArrivals, StringComparer.Ordinal)
+                : new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal),
+            StopReason = stopReason,
             GraphId = identity.GraphId,
             GraphVersion = identity.GraphVersion,
         };

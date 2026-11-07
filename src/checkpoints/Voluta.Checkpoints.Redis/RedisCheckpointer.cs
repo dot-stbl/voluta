@@ -3,6 +3,7 @@ using StackExchange.Redis;
 using Voluta.Abstractions.Checkpoint;
 using Voluta.Abstractions.Diagnostics;
 using Voluta.Abstractions.Runtime;
+using Voluta.Abstractions.Serialization;
 using Voluta.Checkpoints.Redis.Wire;
 
 namespace Voluta.Checkpoints.Redis;
@@ -21,7 +22,7 @@ namespace Voluta.Checkpoints.Redis;
 ///     <c>checkpoint.unsupported_value_type</c>.
 ///     Implements <see cref="IThreadDiscovery" /> via key scanning under the prefix.
 /// </remarks>
-public sealed class RedisCheckpointer : ICheckpointer, IThreadDiscovery
+public sealed class RedisCheckpointer : ICheckpointer, IThreadDiscovery, IRegistryAwareCheckpointer
 {
     private readonly IRedisCheckpointStore store;
     private readonly RedisCheckpointerOptions options;
@@ -46,6 +47,12 @@ public sealed class RedisCheckpointer : ICheckpointer, IThreadDiscovery
         this.store = store;
         this.options = options;
     }
+
+    /// <summary>
+    ///     Host type registry (v050, <see cref="IRegistryAwareCheckpointer" />): assigned by
+    ///     the engine from <c>CompileOptions.CheckpointTypes</c>. Null — unstamped v1 behavior.
+    /// </summary>
+    public CheckpointTypeRegistry? TypeRegistry { get; set; }
 
     /// <inheritdoc />
     /// <remarks>
@@ -90,7 +97,7 @@ public sealed class RedisCheckpointer : ICheckpointer, IThreadDiscovery
     {
         try
         {
-            var document = RedisCheckpointDocument.FromSnapshot(snapshot);
+            var document = RedisCheckpointDocument.FromSnapshot(snapshot, TypeRegistry);
             var json = JsonSerializer.Serialize(document, JsonSerializerOptions.Web);
             if (unitOfWork is not null)
             {
@@ -277,12 +284,12 @@ public sealed class RedisCheckpointer : ICheckpointer, IThreadDiscovery
         }
     }
 
-    private static CheckpointSnapshot? TryDeserialize(string json)
+    private CheckpointSnapshot? TryDeserialize(string json)
     {
         try
         {
             return JsonSerializer.Deserialize<RedisCheckpointDocument>(json, JsonSerializerOptions.Web)
-                ?.ToSnapshot();
+                ?.ToSnapshot(TypeRegistry);
         }
         catch (JsonException)
         {
@@ -290,7 +297,7 @@ public sealed class RedisCheckpointer : ICheckpointer, IThreadDiscovery
         }
     }
 
-    private static CheckpointSnapshot Deserialize(string json)
+    private CheckpointSnapshot Deserialize(string json)
     {
         return TryDeserialize(json)
             ?? throw new CheckpointStoreException(

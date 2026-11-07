@@ -88,5 +88,14 @@ internal static class CheckpointerConformanceFixtures
         {
             throw new InvalidOperationException("Conformance: VersionsSeen['agent']['messages'] expected 1.");
         }
+
+        if (!actual.CompletedTaskIds.SequenceEqual(expected.CompletedTaskIds, StringComparer.Ordinal)
+            || !actual.TaskAttempts.SequenceEqual(expected.TaskAttempts)
+            || actual.JoinArrivals.Count != expected.JoinArrivals.Count
+            || actual.StopReason != expected.StopReason)
+        {
+            throw new InvalidOperationException(
+                "Conformance: v050 progress fields (CompletedTaskIds/TaskAttempts/JoinArrivals/StopReason) mismatch after roundtrip.");
+        }
     }
 }

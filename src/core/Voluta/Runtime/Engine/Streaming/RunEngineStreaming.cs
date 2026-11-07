@@ -97,4 +97,38 @@ internal static class RunEngineStreaming
             ? mode
             : mode;
     }
+
+    /// <summary>
+    ///     Drains a run stream to the next terminal event (end / interrupt / failed /
+    ///     cancelled); a Failed event carrying an exception payload rethrows it. Empty stream
+    ///     falls back to a synthetic End event in the requested mode.
+    /// </summary>
+    public static async Task<StreamEvent> DrainToTerminalAsync(
+        IAsyncEnumerable<StreamEvent> stream,
+        StreamMode streamMode)
+    {
+        StreamEvent? last = null;
+        await foreach (var item in stream)
+        {
+            last = item;
+            if (item.Kind is StreamEventKind.Failed && item.Payload is Exception exception)
+            {
+                throw exception;
+            }
+
+            if (item.Kind is StreamEventKind.End
+                or StreamEventKind.Interrupt
+                or StreamEventKind.Failed
+                or StreamEventKind.Cancelled)
+            {
+                return item;
+            }
+        }
+
+        return last ?? new StreamEvent
+        {
+            Mode = streamMode,
+            Kind = StreamEventKind.End
+        };
+    }
 }

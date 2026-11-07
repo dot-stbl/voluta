@@ -1,10 +1,12 @@
 using Voluta.Abstractions.Channels;
 using Voluta.Abstractions.Checkpoint;
 using Voluta.Abstractions.Runtime;
+using Voluta.Abstractions.Serialization;
 using Voluta.Abstractions.Streaming;
 using Voluta.Abstractions.Topology;
 using Voluta.Exceptions.Run;
 using Voluta.Runtime.Engine;
+using Voluta.Runtime.Engine.Streaming;
 using Voluta.Runtime.Engine.Support;
 
 namespace Voluta.Graph;
@@ -26,6 +28,16 @@ public sealed class CompiledGraph
     {
         this.topology = topology;
         this.checkpointer = checkpointer;
+
+        // v050 type registry transport: the topology carries CompileOptions.CheckpointTypes;
+        // providers implementing the capability interface receive it here (where the
+        // topology is available — CreateWriter only sees RunOptions). InMemory never
+        // implements the interface → zero behavior change.
+        if (topology.CheckpointTypes is { } registry
+            && checkpointer is IRegistryAwareCheckpointer aware)
+        {
+            aware.TypeRegistry = registry;
+        }
     }
 
     /// <summary>
@@ -33,14 +45,12 @@ public sealed class CompiledGraph
     /// </summary>
     public GraphDescription Describe()
     {
-        var staticEdges = new List<GraphEdgeDescription>();
-        foreach (var (source, targets) in topology.StaticEdges.OrderBy(static pair => pair.Key, StringComparer.Ordinal))
-        {
-            foreach (var target in targets)
-            {
-                staticEdges.Add(new GraphEdgeDescription { Source = source, Target = target });
-            }
-        }
+        var staticEdges = topology.StaticEdges
+            .OrderBy(static pair => pair.Key, StringComparer.Ordinal)
+            .SelectMany(
+                static pair => pair.Value,
+                static (pair, target) => new GraphEdgeDescription { Source = pair.Key, Target = target })
+            .ToArray();
 
         return new GraphDescription
         {
@@ -97,7 +107,7 @@ public sealed class CompiledGraph
         RunOptions options,
         CancellationToken cancellationToken = default)
     {
-        return await DrainToTerminalAsync(
+        return await RunEngineStreaming.DrainToTerminalAsync(
             StreamAsync(input, options, cancellationToken),
             options.StreamMode);
     }
@@ -183,7 +193,7 @@ public sealed class CompiledGraph
         Command command,
         CancellationToken cancellationToken = default)
     {
-        return await DrainToTerminalAsync(
+        return await RunEngineStreaming.DrainToTerminalAsync(
             ResumeAsync(threadId, command, StreamMode.Updates, cancellationToken),
             StreamMode.Updates);
     }
@@ -225,18 +235,9 @@ public sealed class CompiledGraph
         }
 
         var list = await checkpointer.ListAsync(threadId, cancellationToken);
-        if (list.Count == 0)
-        {
-            return [];
-        }
-
-        var result = new List<ThreadSnapshot>(list.Count);
-        foreach (var snapshot in list)
-        {
-            result.Add(ThreadSnapshotMapping.FromSnapshot(snapshot));
-        }
-
-        return result;
+        return list
+            .Select(static snapshot => ThreadSnapshotMapping.FromSnapshot(snapshot))
+            .ToArray();
     }
 
     /// <summary>
@@ -372,7 +373,7 @@ public sealed class CompiledGraph
         string threadId,
         CancellationToken cancellationToken = default)
     {
-        return await DrainToTerminalAsync(
+        return await RunEngineStreaming.DrainToTerminalAsync(
             ContinueAsync(threadId, StreamMode.Updates, cancellationToken),
             StreamMode.Updates);
     }
@@ -439,6 +440,10 @@ public sealed class CompiledGraph
             VersionsSeen = CheckpointStateMutation.CloneVersionsSeen(loaded.VersionsSeen),
             PendingWrites = [.. loaded.PendingWrites],
             PendingSends = [.. loaded.PendingSends],
+            CompletedTaskIds = [.. loaded.CompletedTaskIds],
+            TaskAttempts = CheckpointStateMutation.CloneTaskAttempts(loaded.TaskAttempts),
+            JoinArrivals = CheckpointStateMutation.CloneJoinArrivals(loaded.JoinArrivals),
+            StopReason = loaded.StopReason,
             LastNode = loaded.LastNode,
             NextNodes = [.. loaded.NextNodes],
             InterruptPayload = loaded.InterruptPayload,
@@ -452,34 +457,5 @@ public sealed class CompiledGraph
         // step is the expected parent, so a live run's concurrent put loses with conflict.
         await checkpointer.PutAsync(cancelled, loaded.Step, unitOfWork: null, cancellationToken);
         return ThreadSnapshotMapping.FromSnapshot(cancelled);
-    }
-
-    private static async Task<StreamEvent> DrainToTerminalAsync(
-        IAsyncEnumerable<StreamEvent> stream,
-        StreamMode streamMode)
-    {
-        StreamEvent? last = null;
-        await foreach (var item in stream)
-        {
-            last = item;
-            if (item.Kind is StreamEventKind.Failed && item.Payload is Exception exception)
-            {
-                throw exception;
-            }
-
-            if (item.Kind is StreamEventKind.End
-                or StreamEventKind.Interrupt
-                or StreamEventKind.Failed
-                or StreamEventKind.Cancelled)
-            {
-                return item;
-            }
-        }
-
-        return last ?? new StreamEvent
-        {
-            Mode = streamMode,
-            Kind = StreamEventKind.End
-        };
     }
 }

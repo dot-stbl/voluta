@@ -81,6 +81,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
             null);
         long step = 0;
         string? lastNode = null;
+        var startedAt = DateTimeOffset.UtcNow;
 
         // First put of a fresh run: no loaded/written snapshot yet → guard is null (blind), as before.
         await checkpointer.PutAsync(
@@ -115,7 +116,9 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                            lastNode,
                            resumeByTaskId: null,
                            resumeKind: null,
-                           cancellationToken))
+                           joinArrivals: null,
+                           startedAt,
+                           cancellationToken: cancellationToken))
         {
             yield return item;
         }
@@ -145,11 +148,26 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
 
         ValidateGraphIdentity(checkpoint, threadId);
 
+        // Static pauses / guard stops (v050) are not HITL interrupts: there is no pending
+        // interrupt to answer — hosts continue them (ContinueAsync) without a command.
+        // This check MUST precede the legacy single-path fallback below, which would
+        // otherwise synthesize a phantom interrupt from NextNodes[0].
+        if (checkpoint.StopReason is not RunStopReason.None)
+        {
+            throw new GraphInvalidResumeException(
+                $"Thread '{threadId}' is parked by a static pause or stop guard (StopReason={checkpoint.StopReason}); " +
+                "use ContinueAsync — resume commands answer HITL interrupts.");
+        }
+
         var pendingInterrupts = RunEngineLoopHelpers.ResolvePendingInterrupts(checkpoint);
         CommandTaxonomy.EnsureMultiInterruptResumes(command, pendingInterrupts);
 
         var store = new ChannelStore(topology.Channels);
         store.Restore(checkpoint.ChannelValues, checkpoint.ChannelVersions, checkpoint.VersionsSeen);
+
+        // Per-task progress (v050): a superstep that crashed mid-flight recorded completed
+        // tasks + their writes; apply the recorded writes so the resume step sees them.
+        RunEngineExecution.RestorePendingWrites(store, checkpoint);
 
         if (command.Values is { Count: > 0 } values)
         {
@@ -162,6 +180,14 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
             resumeByTaskId);
         var readyTasks = RunEngineLoopHelpers.ToResumeReadyTasks(
             RunEngineLoopHelpers.SelectPendingInterrupts(pendingInterrupts, resumeByTaskId));
+        var resumeArrivals = new Dictionary<string, IReadOnlyList<string>>(
+            checkpoint.JoinArrivals,
+            StringComparer.Ordinal);
+        readyTasks = RunEngineRouting.RehydrateJoins(
+            topology,
+            resumeArrivals,
+            RunEngineRouting.ExcludeCompleted(readyTasks, checkpoint),
+            checkpoint.CompletedTaskIds);
         if (readyTasks.Count == 0)
         {
             var nextNodes = checkpoint.NextNodes.Count > 0
@@ -186,6 +212,8 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
             };
         }
 
+        var startedAt = DateTimeOffset.UtcNow;
+
         // Progressive multi-interrupt: re-run only resumed task ids; keep remaining pending.
         if (remainingAfterResume.Count > 0)
         {
@@ -198,6 +226,8 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                                checkpoint,
                                resumeByTaskId,
                                command.Kind,
+                               resumeArrivals,
+                               startedAt,
                                cancellationToken))
             {
                 yield return item;
@@ -215,7 +245,9 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                            checkpoint.LastNode,
                            resumeByTaskId,
                            command.Kind,
-                           cancellationToken))
+                           resumeArrivals,
+                           startedAt,
+                           cancellationToken: cancellationToken))
         {
             yield return item;
         }
@@ -260,20 +292,31 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
         CancellationToken cancellationToken = default)
     {
         var checkpointer = CreateWriter(options);
+        var startedAt = DateTimeOffset.UtcNow;
         var checkpoint = await checkpointer.GetAsync(threadId, cancellationToken)
                          ?? throw new GraphThreadNotFoundException(
                              $"No checkpoint found for thread '{threadId}'.");
-        if (checkpoint.Status != GraphRunStatus.Running)
+        // v050: the gate widens for policy/static parks only — Interrupted snapshots that
+        // carry a StopReason (StaticBefore/StaticAfter/BudgetExhausted/DeadlineExceeded,
+        // empty PendingInterrupts) resume like Running snapshots. Bare HITL interrupts,
+        // Failed/Cancelled/Done keep throwing.
+        if (checkpoint.Status != GraphRunStatus.Running
+            && (checkpoint.Status != GraphRunStatus.Interrupted
+                || checkpoint.StopReason is RunStopReason.None))
         {
             throw new GraphInvalidContinueException(
-                $"Thread '{threadId}' is not Running (status={checkpoint.Status}); " +
-                "use ResumeAsync for Interrupted or UpdateStateAsync after Failed/Cancelled.");
+                $"Thread '{threadId}' is not Running (status={checkpoint.Status}, stopReason={checkpoint.StopReason}); " +
+                "use ResumeAsync for HITL interrupts or UpdateStateAsync after Failed/Cancelled.");
         }
 
         ValidateGraphIdentity(checkpoint, threadId);
 
         var store = new ChannelStore(topology.Channels);
         store.Restore(checkpoint.ChannelValues, checkpoint.ChannelVersions, checkpoint.VersionsSeen);
+
+        // Per-task progress (v050): apply writes recorded for completed tasks of the
+        // interrupted (crashed) step, then continue only with unfinished tasks.
+        RunEngineExecution.RestorePendingWrites(store, checkpoint);
 
         var nextNodes = checkpoint.NextNodes;
         if (nextNodes.Count == 0 && checkpoint.PendingSends.Count == 0)
@@ -292,15 +335,21 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
             };
         }
 
-        // A2: pending sends only — do not re-pull NextNodes alongside (avoids re-exec map/side-effect).
+        // Static / guard parks (v050) carry the full next ready set in NextNodes — drive it
+        // alongside pending sends. Legacy Running-with-sends snapshots keep A2 semantics
+        // (sends only, NextNodes not re-pulled).
+        var parkedByPolicy = checkpoint.StopReason is not RunStopReason.None;
         if (checkpoint.PendingSends.Count > 0)
         {
             await foreach (var item in ContinueWithPendingSendsAsync(
                                checkpointer,
                                options,
                                store,
-                               nextNodes: [],
+                               nextNodes: parkedByPolicy ? nextNodes : [],
                                checkpoint,
+                               RehydrateArrivals(checkpoint),
+                               startedAt,
+                               skipStaticBeforeOnce: checkpoint.StopReason == RunStopReason.StaticBefore,
                                cancellationToken))
             {
                 yield return item;
@@ -309,19 +358,42 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
             yield break;
         }
 
+        var resumedArrivals = RehydrateArrivals(checkpoint);
+        var resumedReady = RunEngineRouting.RehydrateJoins(
+            topology,
+            resumedArrivals,
+            RunEngineRouting.ExcludeCompleted(
+                RunEngineRouting.ToPullTasks(topology, nextNodes),
+                checkpoint),
+            checkpoint.CompletedTaskIds);
         await foreach (var item in RunLoopAsync(
                            checkpointer,
                            options,
                            store,
-                           RunEngineRouting.ToPullTasks(topology, nextNodes),
+                           resumedReady,
                            checkpoint.Step,
                            checkpoint.LastNode,
                            resumeByTaskId: null,
                            resumeKind: null,
+                           resumedArrivals,
+                           startedAt,
+                           skipStaticBeforeOnce: checkpoint.StopReason == RunStopReason.StaticBefore,
                            cancellationToken))
         {
             yield return item;
         }
+    }
+
+    /// <summary>
+    ///     Restores the join epoch map from a snapshot and re-derives the crashed step's
+    ///     arrivals from <see cref="CheckpointSnapshot.CompletedTaskIds" /> (join firing
+    ///     must survive a boundary-put crash).
+    /// </summary>
+    private Dictionary<string, IReadOnlyList<string>> RehydrateArrivals(CheckpointSnapshot checkpoint)
+    {
+        return new Dictionary<string, IReadOnlyList<string>>(
+            checkpoint.JoinArrivals,
+            StringComparer.Ordinal);
     }
 
     /// <summary>
@@ -351,33 +423,41 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
         CheckpointSnapshot checkpoint,
         IReadOnlyDictionary<string, object?> resumeByTaskId,
         string? resumeKind,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? joinArrivals = null,
+        DateTimeOffset startedAt = default,
         [System.Runtime.CompilerServices.EnumeratorCancellation]
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken = default)
     {
-        var step = checkpoint.Step + 1;
-        if (step > topology.RecursionLimit)
+        var arrivals = new Dictionary<string, IReadOnlyList<string>>(
+            joinArrivals ?? new Dictionary<string, IReadOnlyList<string>>(),
+            StringComparer.Ordinal);
+
+        // Superstep entry order (v050): guards → static-before → limit → execute.
+        var park = await RunEngineLoopHelpers.TryEnterSuperstepAsync(
+            topology,
+            checkpointer,
+            options,
+            store,
+            checkpoint.Step,
+            checkpoint.LastNode,
+            readyTasks,
+            [],
+            arrivals,
+            startedAt,
+            checkStaticBefore: true,
+            cancellationToken);
+        if (park is not null)
         {
-            var outOfSteps = new GraphOutOfStepsException(topology.RecursionLimit, step);
-            await checkpointer.PutAsync(
-                RunEngineSnapshots.Build(
-                    options.ThreadId,
-                    step,
-                    GraphRunStatus.Failed,
-                    store,
-                    checkpoint.LastNode,
-                    RunEngineLoopHelpers.DistinctNodeNames(readyTasks),
-                    [],
-                    null,
-                    identity: checkpointer.Identity),
-                cancellationToken);
-            yield return RunEngineStreaming.Terminal(
-                options.StreamMode,
-                StreamEventKind.Failed,
-                step,
-                store,
-                outOfSteps);
-            throw outOfSteps;
+            yield return park.Event;
+            if (park.OutOfSteps is { } outOfSteps)
+            {
+                throw outOfSteps;
+            }
+
+            yield break;
         }
+
+        var step = checkpoint.Step + 1;
 
         SuperstepCommit? commit = null;
         await foreach (var item in RunEngineLoopHelpers.RunSuperstepStreamingAsync(
@@ -390,6 +470,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                            checkpoint.LastNode,
                            resumeByTaskId,
                            resumeKind,
+                           arrivals,
                            cancellationToken))
         {
             if (item.LiveEvent is { } live)
@@ -407,6 +488,10 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
         {
             throw new InvalidOperationException("Superstep completed without a commit.");
         }
+
+        arrivals = new Dictionary<string, IReadOnlyList<string>>(
+            commit.JoinArrivals,
+            StringComparer.Ordinal);
 
         if (commit.TerminalEvent is { } terminal
             && terminal.Kind is StreamEventKind.Failed or StreamEventKind.Cancelled)
@@ -439,6 +524,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                 firstPayload,
                 channelValues: null,
                 pendingInterrupts: remainingInterrupts,
+                joinArrivals: arrivals,
                 identity: checkpointer.Identity),
             cancellationToken);
 
@@ -456,16 +542,36 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
         ChannelStore store,
         IReadOnlyList<string> nextNodes,
         CheckpointSnapshot checkpoint,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? joinArrivals = null,
+        DateTimeOffset startedAt = default,
+        bool skipStaticBeforeOnce = false,
         [System.Runtime.CompilerServices.EnumeratorCancellation]
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken = default)
     {
-        var pull = RunEngineRouting.ToPullTasks(topology, nextNodes);
+        var arrivals = new Dictionary<string, IReadOnlyList<string>>(
+            joinArrivals ?? new Dictionary<string, IReadOnlyList<string>>(),
+            StringComparer.Ordinal);
+        var skipStaticBefore = skipStaticBeforeOnce;
+        var pull = RunEngineRouting.RehydrateJoins(
+            topology,
+            arrivals,
+            RunEngineRouting.ExcludeCompleted(
+                RunEngineRouting.ToPullTasks(topology, nextNodes),
+                checkpoint),
+            checkpoint.CompletedTaskIds);
         var ready = new List<ReadyTask>(pull.Count + checkpoint.PendingSends.Count);
         ready.AddRange(pull);
         foreach (var send in checkpoint.PendingSends)
         {
-            ready.Add(new ReadyTask(send.NodeName, send.TaskId, send.Payload));
-        }
+            if (checkpoint.CompletedTaskIds.Contains(send.TaskId))
+            {
+                continue;
+            }
+
+            ready.Add(
+                checkpoint.TaskAttempts.TryGetValue(send.TaskId, out var attempt) && attempt > 0
+                    ? new ReadyTask(send.NodeName, send.TaskId, send.Payload) { StartAttempt = attempt }
+                    : new ReadyTask(send.NodeName, send.TaskId, send.Payload));        }
 
         ready.Sort(static (left, right) =>
         {
@@ -496,6 +602,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                         [],
                         [],
                         interruptPayload: null,
+                        joinArrivals: arrivals,
                         identity: checkpointer.Identity),
                     cancellationToken);
 
@@ -507,32 +614,33 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                 yield break;
             }
 
-            step++;
-            if (step > topology.RecursionLimit)
+            // Superstep entry order (v050): guards → static-before → limit → execute.
+            var park = await RunEngineLoopHelpers.TryEnterSuperstepAsync(
+                topology,
+                checkpointer,
+                options,
+                store,
+                step,
+                lastNode,
+                readyTasks,
+                RunEngineExecution.StepSends(readyTasks),
+                arrivals,
+                startedAt,
+                checkStaticBefore: !skipStaticBefore,
+                cancellationToken);
+            if (park is not null)
             {
-                var outOfSteps = new GraphOutOfStepsException(topology.RecursionLimit, step);
-                var failedNodeNames = RunEngineLoopHelpers.DistinctNodeNames(readyTasks);
-                await checkpointer.PutAsync(
-                    RunEngineSnapshots.Build(
-                        options.ThreadId,
-                        step,
-                        GraphRunStatus.Failed,
-                        store,
-                        lastNode,
-                        failedNodeNames,
-                        [],
-                        null,
-                        identity: checkpointer.Identity),
-                    cancellationToken);
+                yield return park.Event;
+                if (park.OutOfSteps is { } outOfSteps)
+                {
+                    throw outOfSteps;
+                }
 
-                yield return RunEngineStreaming.Terminal(
-                    streamMode,
-                    StreamEventKind.Failed,
-                    step,
-                    store,
-                    outOfSteps);
-                throw outOfSteps;
+                yield break;
             }
+
+            skipStaticBefore = false;
+            step++;
 
             SuperstepCommit? commit = null;
             await foreach (var item in RunEngineLoopHelpers.RunSuperstepStreamingAsync(
@@ -545,6 +653,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                                lastNode,
                             resumeByTaskId: null,
                             resumeKind: null,
+                            arrivals,
                             cancellationToken))
             {
                 if (item.LiveEvent is { } live)
@@ -565,6 +674,9 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
 
             lastNode = commit.LastNode;
             readyTasks = commit.ReadyTasks;
+            arrivals = new Dictionary<string, IReadOnlyList<string>>(
+                commit.JoinArrivals,
+                StringComparer.Ordinal);
 
             if (commit.TerminalEvent is { } terminal)
             {
@@ -593,11 +705,20 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
         string? lastNode,
         IReadOnlyDictionary<string, object?>? resumeByTaskId,
         string? resumeKind,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? joinArrivals = null,
+        DateTimeOffset startedAt = default,
+        bool skipStaticBeforeOnce = false,
         [System.Runtime.CompilerServices.EnumeratorCancellation]
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken = default)
     {
         var readyTasks = initialReady;
         var isFirstResumeStep = resumeByTaskId is not null;
+        var arrivals = new Dictionary<string, IReadOnlyList<string>>(
+            joinArrivals ?? new Dictionary<string, IReadOnlyList<string>>(),
+            StringComparer.Ordinal);
+        // v050: resuming a StaticBefore park must drive the parked node through — the
+        // before-check re-arms only from the NEXT entry (cycles re-park again, per spec).
+        var skipStaticBefore = skipStaticBeforeOnce;
 
         while (true)
         {
@@ -615,6 +736,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                         [],
                         [],
                         interruptPayload: null,
+                        joinArrivals: arrivals,
                         identity: checkpointer.Identity),
                     cancellationToken);
 
@@ -626,32 +748,34 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                 yield break;
             }
 
-            step++;
-            if (step > topology.RecursionLimit)
+            // Superstep entry order (v050, deliberate): guards → static-before → limit →
+            // execute. The parked snapshot keeps the current step (the step is not consumed).
+            var park = await RunEngineLoopHelpers.TryEnterSuperstepAsync(
+                topology,
+                checkpointer,
+                options,
+                store,
+                step,
+                lastNode,
+                readyTasks,
+                RunEngineExecution.StepSends(readyTasks),
+                arrivals,
+                startedAt,
+                checkStaticBefore: !skipStaticBefore,
+                cancellationToken);
+            if (park is not null)
             {
-                var outOfSteps = new GraphOutOfStepsException(topology.RecursionLimit, step);
-                var failedNodeNames = RunEngineLoopHelpers.DistinctNodeNames(readyTasks);
-                await checkpointer.PutAsync(
-                    RunEngineSnapshots.Build(
-                        options.ThreadId,
-                        step,
-                        GraphRunStatus.Failed,
-                        store,
-                        lastNode,
-                        failedNodeNames,
-                        [],
-                        null,
-                        identity: checkpointer.Identity),
-                    cancellationToken);
+                yield return park.Event;
+                if (park.OutOfSteps is { } outOfSteps)
+                {
+                    throw outOfSteps;
+                }
 
-                yield return RunEngineStreaming.Terminal(
-                    options.StreamMode,
-                    StreamEventKind.Failed,
-                    step,
-                    store,
-                    outOfSteps);
-                throw outOfSteps;
+                yield break;
             }
+
+            skipStaticBefore = false;
+            step++;
 
             // readyTasks from ToPullTasks are already sorted; re-sort only when sends merge in.
             var orderedReady = readyTasks;
@@ -671,12 +795,16 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                                lastNode,
                                payloadsForStep,
                                kindForStep,
+                               arrivals,
                                cancellationToken))
             {
                 if (item.Commit is { } commit)
                 {
                     lastNode = commit.LastNode;
                     readyTasks = commit.ReadyTasks;
+                    arrivals = new Dictionary<string, IReadOnlyList<string>>(
+                        commit.JoinArrivals,
+                        StringComparer.Ordinal);
 
                     if (commit.TerminalEvent is { } terminal)
                     {
@@ -717,6 +845,10 @@ file sealed class SuperstepCommit
     public Exception? Exception { get; init; }
 
     public IReadOnlyList<StreamEvent> StreamItems { get; init; } = [];
+
+    /// <summary>Join epoch map after this superstep (v050 wait-for-all joins).</summary>
+    public IReadOnlyDictionary<string, IReadOnlyList<string>> JoinArrivals { get; init; } =
+        new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
 }
 
 /// <summary>
@@ -730,10 +862,190 @@ file sealed class SuperstepStreamItem
 }
 
 /// <summary>
+///     Park outcome of the superstep entry prelude: the terminal event to replay and, on
+///     the recursion cap, the failure to rethrow after the event.
+/// </summary>
+file sealed record SuperstepEntryPark(StreamEvent Event, GraphOutOfStepsException? OutOfSteps = null);
+
+/// <summary>
 ///     Hot-path helpers for ready-set node name extraction and superstep body (file-static).
 /// </summary>
 file static class RunEngineLoopHelpers
 {
+    /// <summary>
+    ///     Explicit superstep-cap check (v050): <see cref="Voluta.Graph.Options.RecursionLimit.Unlimited" />
+    ///     disables the cap without relying on overflow; <paramref name="step" /> is long.
+    /// </summary>
+    public static bool IsOutOfSteps(long step, int limit)
+    {
+        return limit != Voluta.Graph.Options.RecursionLimit.Unlimited && step > limit;
+    }
+
+    /// <summary>
+    ///     Superstep entry prelude (v050): guards → static-before → recursion limit, checked in
+    ///     exactly this order (the caller owns the cancellation check and the empty-ready Done
+    ///     check). On a stop it parks the run — <c>Interrupted</c> snapshot at the current step
+    ///     (the step is not consumed) for guard/static stops, <c>Failed</c> at the incremented
+    ///     step on the cap — and returns the terminal event to replay plus the failure to
+    ///     throw; null means execution proceeds at <paramref name="step" /> + 1.
+    /// </summary>
+    public static async Task<SuperstepEntryPark?> TryEnterSuperstepAsync(
+        GraphTopology topology,
+        RunCheckpointWriter checkpointer,
+        RunOptions options,
+        ChannelStore store,
+        long step,
+        string? lastNode,
+        IReadOnlyList<ReadyTask> readyTasks,
+        IReadOnlyList<PendingSend> pendingSends,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> joinArrivals,
+        DateTimeOffset startedAt,
+        bool checkStaticBefore,
+        CancellationToken cancellationToken)
+    {
+        var guardStop = EvaluateGuards(topology.RunGuards, step + 1, startedAt);
+        if (guardStop is { } guardReason)
+        {
+            await ParkPolicyStopAsync(
+                checkpointer,
+                options,
+                store,
+                step,
+                lastNode,
+                readyTasks,
+                pendingSends,
+                joinArrivals,
+                guardReason,
+                cancellationToken);
+            return new SuperstepEntryPark(
+                RunEngineStreaming.Terminal(
+                    options.StreamMode,
+                    StreamEventKind.Interrupt,
+                    step,
+                    store,
+                    payload: StopReasonPayload(guardReason)));
+        }
+
+        if (checkStaticBefore && StaticInterrupts.ShouldPauseBefore(topology, readyTasks))
+        {
+            await ParkPolicyStopAsync(
+                checkpointer,
+                options,
+                store,
+                step,
+                lastNode,
+                readyTasks,
+                pendingSends,
+                joinArrivals,
+                RunStopReason.StaticBefore,
+                cancellationToken);
+            return new SuperstepEntryPark(
+                RunEngineStreaming.Terminal(options.StreamMode, StreamEventKind.Interrupt, step, store));
+        }
+
+        var nextStep = step + 1;
+        if (IsOutOfSteps(nextStep, topology.RecursionLimit))
+        {
+            var outOfSteps = new GraphOutOfStepsException(topology.RecursionLimit, nextStep);
+            await checkpointer.PutAsync(
+                RunEngineSnapshots.Build(
+                    options.ThreadId,
+                    nextStep,
+                    GraphRunStatus.Failed,
+                    store,
+                    lastNode,
+                    DistinctNodeNames(readyTasks),
+                    [],
+                    null,
+                    joinArrivals: joinArrivals,
+                    identity: checkpointer.Identity),
+                cancellationToken);
+            return new SuperstepEntryPark(
+                RunEngineStreaming.Terminal(options.StreamMode, StreamEventKind.Failed, nextStep, store, outOfSteps),
+                outOfSteps);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    ///     Guard evaluation before superstep <paramref name="nextStep" /> (v050): first Stop
+    ///     wins; the reason string maps to a typed <see cref="RunStopReason" />
+    ///     (<c>deadline_exceeded</c> → DeadlineExceeded, everything else → BudgetExhausted —
+    ///     the typed enum stays closed). Null = proceed.
+    /// </summary>
+    private static RunStopReason? EvaluateGuards(
+        IReadOnlyList<IRunGuard> guards,
+        long nextStep,
+        DateTimeOffset startedAt)
+    {
+        if (guards.Count == 0)
+        {
+            return null;
+        }
+
+        var context = new RunGuardContext
+        {
+            NextStep = nextStep,
+            CompletedSteps = nextStep - 1,
+            StartedAt = startedAt,
+        };
+        foreach (var guard in guards)
+        {
+            var decision = guard.Evaluate(context);
+            if (decision.Action == RunGuardAction.Stop)
+            {
+                return string.Equals(decision.Reason, RunGuards.DeadlineExceeded, StringComparison.Ordinal)
+                    ? RunStopReason.DeadlineExceeded
+                    : RunStopReason.BudgetExhausted;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    ///     Parks the run with an <c>Interrupted</c> snapshot at <paramref name="step" />
+    ///     (unchanged — the step is not consumed): ready set in NextNodes, pending sends
+    ///     preserved, empty PendingInterrupts, typed StopReason. Serves static pauses
+    ///     (StaticBefore) and guard stops (Budget/Deadline) alike.
+    /// </summary>
+    private static async Task ParkPolicyStopAsync(
+        RunCheckpointWriter checkpointer,
+        RunOptions options,
+        ChannelStore store,
+        long step,
+        string? lastNode,
+        IReadOnlyList<ReadyTask> readyTasks,
+        IReadOnlyList<PendingSend> pendingSends,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> joinArrivals,
+        RunStopReason reason,
+        CancellationToken cancellationToken)
+    {
+        await checkpointer.PutAsync(
+            RunEngineSnapshots.Build(
+                options.ThreadId,
+                step,
+                GraphRunStatus.Interrupted,
+                store,
+                lastNode,
+                DistinctNodeNames(readyTasks),
+                pendingSends,
+                null,
+                pendingInterrupts: [],
+                joinArrivals: joinArrivals,
+                stopReason: reason,
+                identity: checkpointer.Identity),
+            cancellationToken);
+    }
+
+    private static string StopReasonPayload(RunStopReason reason)
+    {
+        return reason == RunStopReason.DeadlineExceeded
+            ? RunGuards.DeadlineExceeded
+            : RunGuards.BudgetExhausted;
+    }
+
     public static async IAsyncEnumerable<SuperstepStreamItem> RunSuperstepStreamingAsync(
         GraphTopology topology,
         RunCheckpointWriter checkpointer,
@@ -744,6 +1056,7 @@ file static class RunEngineLoopHelpers
         string? lastNode,
         IReadOnlyDictionary<string, object?>? resumeByTaskId,
         string? resumeKind,
+        Dictionary<string, IReadOnlyList<string>> joinArrivals,
         [System.Runtime.CompilerServices.EnumeratorCancellation]
         CancellationToken cancellationToken)
     {
@@ -776,6 +1089,7 @@ file static class RunEngineLoopHelpers
             resumeKind,
             options.ThreadId,
             streamWriterFactory,
+            joinArrivals,
             cancellationToken);
 
         while (!executeTask.IsCompleted)
@@ -823,6 +1137,7 @@ file static class RunEngineLoopHelpers
         string? resumeKind,
         string threadId,
         Func<string, IStreamWriter>? streamWriterFactory,
+        Dictionary<string, IReadOnlyList<string>> joinArrivals,
         CancellationToken cancellationToken)
     {
         using var superstep = ActivityScope.Start(
@@ -838,6 +1153,11 @@ file static class RunEngineLoopHelpers
             resumeKind,
             threadId,
             streamWriterFactory,
+            checkpointer,
+            store,
+            step,
+            lastNode,
+            joinArrivals,
             cancellationToken);
 
         if (executionOutcome.Cancelled)
@@ -909,11 +1229,18 @@ file static class RunEngineLoopHelpers
         if (pendingInterrupts.Count > 0)
         {
             // When any task interrupts, continue results from the same superstep are not applied
-            // (barrier holds until all pending interrupts resume).
+            // (barrier holds until all pending interrupts resume). The drain-side progress
+            // buffer rides along: resume applies the completed siblings' writes and re-runs
+            // only the interrupted tasks.
             lastNode = pendingInterrupts[^1].NodeName;
             var nextNodeNames = DistinctNames(
                 [.. pendingInterrupts.Select(static item => item.NodeName)]);
             var primaryPayload = pendingInterrupts[0].Payload;
+            var progressCurrent = executionOutcome.Progress?.Current();
+            var bufferedWrites = progressCurrent?.Writes ?? (IReadOnlyList<PendingWrite>)[];
+            var bufferedCompleted = progressCurrent?.Completed ?? (IReadOnlyList<string>)[];
+            var bufferedAttempts = progressCurrent?.Attempts
+                ?? new Dictionary<string, int>(StringComparer.Ordinal);
             await checkpointer.PutAsync(
                 RunEngineSnapshots.Build(
                     options.ThreadId,
@@ -925,6 +1252,10 @@ file static class RunEngineLoopHelpers
                     [],
                     primaryPayload,
                     pendingInterrupts: pendingInterrupts,
+                    pendingWrites: bufferedWrites,
+                    completedTaskIds: bufferedCompleted,
+                    taskAttempts: bufferedAttempts,
+                    joinArrivals: joinArrivals,
                     identity: checkpointer.Identity),
                 cancellationToken);
 
@@ -1029,7 +1360,9 @@ file static class RunEngineLoopHelpers
             }
         }
 
-        var nextPull = RunEngineRouting.ToPullTasks(topology, DistinctNames(scheduled));
+        var nextPull = RunEngineRouting.ToPullTasks(
+            topology,
+            DistinctNames(ResolveJoins(topology, joinArrivals, nodeNames, scheduled)));
         IReadOnlyList<ReadyTask> readyTasks;
         if (pendingSends.Count == 0)
         {
@@ -1040,10 +1373,8 @@ file static class RunEngineLoopHelpers
             // Merge pull (already sorted) with sends; sort once by node then task id.
             var merged = new List<ReadyTask>(nextPull.Count + pendingSends.Count);
             merged.AddRange(nextPull);
-            foreach (var send in pendingSends)
-            {
-                merged.Add(new ReadyTask(send.NodeName, send.TaskId, send.Payload));
-            }
+            merged.AddRange(pendingSends.Select(
+                static send => new ReadyTask(send.NodeName, send.TaskId, send.Payload)));
 
             merged.Sort(static (left, right) =>
             {
@@ -1056,6 +1387,41 @@ file static class RunEngineLoopHelpers
         }
 
         var checkpointNextNodes = DistinctNodeNames(readyTasks);
+
+        // Static pause AFTER output (v050): routing already produced the next ready set —
+        // park with it (nothing re-runs); the step's own sends stay preserved for resume.
+        if (StaticInterrupts.ShouldPauseAfter(topology, nodeNames))
+        {
+            await checkpointer.PutAsync(
+                RunEngineSnapshots.Build(
+                    options.ThreadId,
+                    step,
+                    GraphRunStatus.Interrupted,
+                    store,
+                    lastNode,
+                    checkpointNextNodes,
+                    pendingSends,
+                    null,
+                    postApplySnapshot,
+                    joinArrivals: joinArrivals,
+                    stopReason: RunStopReason.StaticAfter,
+                    identity: checkpointer.Identity),
+                cancellationToken);
+
+            superstep.SetTag(VolutaDiagnostics.TagRunStatus, nameof(GraphRunStatus.Interrupted));
+            return new SuperstepCommit
+            {
+                LastNode = lastNode,
+                ReadyTasks = readyTasks,
+                JoinArrivals = new Dictionary<string, IReadOnlyList<string>>(joinArrivals, StringComparer.Ordinal),
+                TerminalEvent = RunEngineStreaming.Terminal(
+                    options.StreamMode,
+                    StreamEventKind.Interrupt,
+                    step,
+                    store),
+            };
+        }
+
         await checkpointer.PutAsync(
             RunEngineSnapshots.Build(
                 options.ThreadId,
@@ -1067,6 +1433,7 @@ file static class RunEngineLoopHelpers
                 pendingSends,
                 null,
                 postApplySnapshot,
+                joinArrivals: joinArrivals,
                 identity: checkpointer.Identity),
             cancellationToken);
 
@@ -1075,6 +1442,7 @@ file static class RunEngineLoopHelpers
         {
             LastNode = lastNode,
             ReadyTasks = readyTasks,
+            JoinArrivals = new Dictionary<string, IReadOnlyList<string>>(joinArrivals, StringComparer.Ordinal),
             StreamItems = [.. RunEngineStreaming.EmitCommit(
                 options.StreamMode,
                 step,
@@ -1083,6 +1451,83 @@ file static class RunEngineLoopHelpers
                 store,
                 postApplySnapshot)],
         };
+    }
+
+    /// <summary>
+    ///     Wait-for-all join resolution (v050): join targets reach <paramref name="scheduled" />
+    ///     through their sources' static edges, but the barrier holds them until ALL sources
+    ///     completed in the current epoch. Completed sources arrive in the epoch map; a fully
+    ///     armed join fires (epoch resets, target stays scheduled); an armed-but-incomplete
+    ///     join parks its target until the remaining sources arrive. Cycle-compatible: the
+    ///     epoch resets on fire, so the next full pass of sources re-triggers the target.
+    ///     Mutates <paramref name="joinArrivals" /> (engine-owned live epoch map, carried
+    ///     on every commit put).
+    /// </summary>
+    private static IReadOnlyList<string> ResolveJoins(
+        GraphTopology topology,
+        Dictionary<string, IReadOnlyList<string>> joinArrivals,
+        IReadOnlyList<string> completedNodes,
+        List<string> scheduled)
+    {
+        if (topology.JoinSources.Count == 0)
+        {
+            return scheduled;
+        }
+
+        var fired = new List<string>();
+        foreach (var nodeName in completedNodes)
+        {
+            foreach (var (target, sources) in topology.JoinSources)
+            {
+                if (!sources.Contains(nodeName))
+                {
+                    continue;
+                }
+
+                var arrived = joinArrivals.TryGetValue(target, out var list)
+                    ? new List<string>(list)
+                    : [];
+                if (!arrived.Contains(nodeName))
+                {
+                    arrived.Add(nodeName);
+                }
+
+                if (sources.All(arrived.Contains))
+                {
+                    joinArrivals.Remove(target);
+                    if (!fired.Contains(target))
+                    {
+                        fired.Add(target);
+                    }
+                }
+                else
+                {
+                    joinArrivals[target] = arrived;
+                }
+            }
+        }
+
+        // Parked join targets leave the scheduled set; fired ones stay/enter exactly once.
+        var result = new List<string>(scheduled.Count + fired.Count);
+        foreach (var name in scheduled)
+        {
+            if (topology.JoinSources.ContainsKey(name) && !fired.Contains(name))
+            {
+                continue;
+            }
+
+            result.Add(name);
+        }
+
+        foreach (var target in fired)
+        {
+            if (!result.Contains(target))
+            {
+                result.Add(target);
+            }
+        }
+
+        return result;
     }
 
     public static IReadOnlyList<string> DistinctNodeNames(IReadOnlyList<ReadyTask> tasks)
@@ -1113,7 +1558,7 @@ file static class RunEngineLoopHelpers
         return names;
     }
 
-    public static IReadOnlyList<string> DistinctNames(List<string> names)
+    public static IReadOnlyList<string> DistinctNames(IReadOnlyList<string> names)
     {
         if (names.Count == 0)
         {
@@ -1251,12 +1696,9 @@ file static class RunEngineLoopHelpers
             return [];
         }
 
-        var tasks = new List<ReadyTask>(pendingInterrupts.Count);
-        foreach (var pending in pendingInterrupts)
-        {
-            tasks.Add(new ReadyTask(pending.NodeName, pending.TaskId, pending.TaskPayload));
-        }
-
+        var tasks = pendingInterrupts
+            .Select(static pending => new ReadyTask(pending.NodeName, pending.TaskId, pending.TaskPayload))
+            .ToList();
         tasks.Sort(static (left, right) =>
         {
             var nodeCompare = string.CompareOrdinal(left.NodeName, right.NodeName);

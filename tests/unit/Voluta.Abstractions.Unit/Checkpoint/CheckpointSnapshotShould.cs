@@ -36,6 +36,42 @@ public sealed class CheckpointSnapshotShould
         snapshot.FormatVersion.ShouldBe(1);
     }
 
+    [Fact(DisplayName = "Given an empty snapshot, when constructed, then v050 progress fields default to empty / None")]
+    public void DefaultProgressFieldsToEmpty()
+    {
+        var snapshot = new CheckpointSnapshot { ThreadId = "thread-1" };
+
+        snapshot.CompletedTaskIds.ShouldBeEmpty();
+        snapshot.TaskAttempts.ShouldBeEmpty();
+        snapshot.JoinArrivals.ShouldBeEmpty();
+        snapshot.StopReason.ShouldBe(RunStopReason.None);
+    }
+
+    [Fact(DisplayName = "Given v050 progress fields, when set, then init-only preserved")]
+    public void PreserveProgressFields()
+    {
+        var attempts = new Dictionary<string, int>(StringComparer.Ordinal) { ["agent"] = 3 };
+        var arrivals = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
+        {
+            ["gate"] = ["left", "right"],
+        };
+
+        var snapshot = new CheckpointSnapshot
+        {
+            ThreadId = "thread-50",
+            Status = GraphRunStatus.Interrupted,
+            CompletedTaskIds = ["tools"],
+            TaskAttempts = attempts,
+            JoinArrivals = arrivals,
+            StopReason = RunStopReason.BudgetExhausted,
+        };
+
+        snapshot.CompletedTaskIds.ShouldBe(["tools"]);
+        snapshot.TaskAttempts.ShouldBeSameAs(attempts);
+        snapshot.JoinArrivals.ShouldBeSameAs(arrivals);
+        snapshot.StopReason.ShouldBe(RunStopReason.BudgetExhausted);
+    }
+
     [Fact(DisplayName = "Given graph identity and cancel reason, when set, then fields are init-only preserved")]
     public void PreserveAdditiveIdentityAndCancelFields()
     {

@@ -1,11 +1,12 @@
 using System.Text.Json;
 using Voluta.Abstractions.Checkpoint;
 using Voluta.Abstractions.Runtime;
+using Voluta.Abstractions.Serialization;
 
 namespace Voluta.Checkpoints.EntityFrameworkCore.Wire;
 
 /// <summary>
-///     Wire shape for a single checkpoint JSON payload (same C-shape as the file provider).
+///     Wire shape for a single EF checkpoint record document.
 /// </summary>
 internal sealed class EfCheckpointDocument
 {
@@ -41,7 +42,21 @@ internal sealed class EfCheckpointDocument
 
     public string? CancelReason { get; set; }
 
-    public static EfCheckpointDocument FromSnapshot(CheckpointSnapshot snapshot)
+    /// <summary>v050 additive: tasks of the current step that completed (empty at boundaries).</summary>
+    public List<string>? CompletedTaskIds { get; set; }
+
+    /// <summary>v050 additive: in-progress retry attempt per task id.</summary>
+    public Dictionary<string, int>? TaskAttempts { get; set; }
+
+    /// <summary>v050 additive: join target → sources arrived in the current epoch.</summary>
+    public Dictionary<string, List<string>>? JoinArrivals { get; set; }
+
+    /// <summary>v050 additive: typed stop reason enum name behind an Interrupted snapshot.</summary>
+    public string? StopReason { get; set; }
+
+    public static EfCheckpointDocument FromSnapshot(
+        CheckpointSnapshot snapshot,
+        CheckpointTypeRegistry? registry = null)
     {
         return new EfCheckpointDocument
         {
@@ -51,7 +66,7 @@ internal sealed class EfCheckpointDocument
             Status = snapshot.Status.ToString(),
             ChannelValues = snapshot.ChannelValues.ToDictionary(
                 static pair => pair.Key,
-                static pair => EfCheckpointJson.ToElement(pair.Value),
+                pair => EfCheckpointJson.ToElement(pair.Value, registry),
                 StringComparer.Ordinal),
             ChannelVersions = new Dictionary<string, long>(snapshot.ChannelVersions, StringComparer.Ordinal),
             VersionsSeen = snapshot.VersionsSeen.ToDictionary(
@@ -60,48 +75,79 @@ internal sealed class EfCheckpointDocument
                 StringComparer.Ordinal),
             PendingWrites =
             [
-                .. snapshot.PendingWrites.Select(static write => new EfPendingWriteDocument
+                .. snapshot.PendingWrites.Select(write => new EfPendingWriteDocument
                 {
                     TaskId = write.TaskId,
                     ChannelName = write.ChannelName,
-                    Value = EfCheckpointJson.ToElement(write.Value),
+                    Value = EfCheckpointJson.ToElement(write.Value, registry),
                 })
             ],
             PendingSends =
             [
-                .. snapshot.PendingSends.Select(static send => new EfPendingSendDocument
+                .. snapshot.PendingSends.Select(send => new EfPendingSendDocument
                 {
                     NodeName = send.NodeName,
                     TaskId = send.TaskId,
-                    Payload = EfCheckpointJson.ToElement(send.Payload),
+                    Payload = EfCheckpointJson.ToElement(send.Payload, registry),
                 })
             ],
             PendingInterrupts =
             [
-                .. snapshot.PendingInterrupts.Select(static item => new EfPendingInterruptDocument
+                .. snapshot.PendingInterrupts.Select(item => new EfPendingInterruptDocument
                 {
                     TaskId = item.TaskId,
                     NodeName = item.NodeName,
-                    Payload = EfCheckpointJson.ToElement(item.Payload),
-                    TaskPayload = EfCheckpointJson.ToElement(item.TaskPayload),
+                    Payload = EfCheckpointJson.ToElement(item.Payload, registry),
+                    TaskPayload = EfCheckpointJson.ToElement(item.TaskPayload, registry),
                 })
             ],
             LastNode = snapshot.LastNode,
             NextNodes = [.. snapshot.NextNodes],
-            InterruptPayload = EfCheckpointJson.ToElement(snapshot.InterruptPayload),
+            InterruptPayload = EfCheckpointJson.ToElement(snapshot.InterruptPayload, registry),
             GraphId = snapshot.GraphId,
             GraphVersion = snapshot.GraphVersion,
             CancelReason = snapshot.CancelReason,
+            CompletedTaskIds = snapshot.CompletedTaskIds is { Count: > 0 }
+                ? [.. snapshot.CompletedTaskIds]
+                : null,
+            TaskAttempts = snapshot.TaskAttempts is { Count: > 0 }
+                ? new Dictionary<string, int>(snapshot.TaskAttempts, StringComparer.Ordinal)
+                : null,
+            JoinArrivals = snapshot.JoinArrivals is { Count: > 0 }
+                ? snapshot.JoinArrivals.ToDictionary(
+                    static pair => pair.Key,
+                    static pair => new List<string>(pair.Value),
+                    StringComparer.Ordinal)
+                : null,
+            StopReason = snapshot.StopReason == RunStopReason.None
+                ? null
+                : snapshot.StopReason.ToString(),
         };
     }
 
-    public CheckpointSnapshot ToSnapshot()
+    /// <summary>
+    ///     Deserializes a stored JSON payload (EF value-converter path). The registry in
+    ///     scope (<see cref="EfCheckpointRegistryScope.Current" />) drives typed restore.
+    /// </summary>
+    public static CheckpointSnapshot DeserializeToSnapshot(string json)
+    {
+        var document = JsonSerializer.Deserialize<EfCheckpointDocument>(json, JsonSerializerOptions.Web)
+                       ?? throw new CheckpointStoreException(
+                           CheckpointWireFormat.UnsupportedValueTypeCode,
+                           "Checkpoint payload deserialized to an empty document.");
+        return document.ToSnapshot(EfCheckpointRegistryScope.Current);
+    }
+
+    public CheckpointSnapshot ToSnapshot(CheckpointTypeRegistry? registry = null)
     {
         CheckpointWireFormat.EnsureSupported(FormatVersion);
 
         var status = Enum.TryParse<GraphRunStatus>(Status, ignoreCase: true, out var parsed)
             ? parsed
             : GraphRunStatus.Running;
+        var stopReason = Enum.TryParse<RunStopReason>(StopReason, ignoreCase: true, out var parsedReason)
+            ? parsedReason
+            : RunStopReason.None;
 
         return new CheckpointSnapshot
         {
@@ -111,7 +157,7 @@ internal sealed class EfCheckpointDocument
             Status = status,
             ChannelValues = ChannelValues.ToDictionary(
                 static pair => pair.Key,
-                static pair => EfCheckpointJson.FromElement(pair.Value),
+                pair => EfCheckpointJson.FromElement(pair.Value, registry),
                 StringComparer.Ordinal),
             ChannelVersions = new Dictionary<string, long>(ChannelVersions, StringComparer.Ordinal),
             VersionsSeen = VersionsSeen.ToDictionary(
@@ -122,48 +168,54 @@ internal sealed class EfCheckpointDocument
                 StringComparer.Ordinal),
             PendingWrites =
             [
-                .. PendingWrites.Select(static write => new PendingWrite
+                .. PendingWrites.Select(write => new PendingWrite
                 {
                     TaskId = write.TaskId,
                     ChannelName = write.ChannelName,
-                    Value = EfCheckpointJson.FromElement(write.Value),
+                    Value = EfCheckpointJson.FromElement(write.Value, registry),
                 })
             ],
             PendingSends =
             [
-                .. PendingSends.Select(static send => new PendingSend
+                .. PendingSends.Select(send => new PendingSend
                 {
                     NodeName = send.NodeName,
                     TaskId = send.TaskId,
-                    Payload = EfCheckpointJson.FromElement(send.Payload),
+                    Payload = EfCheckpointJson.FromElement(send.Payload, registry),
                 })
             ],
             PendingInterrupts =
             [
-                .. PendingInterrupts.Select(static item => new PendingInterrupt
+                .. PendingInterrupts.Select(item => new PendingInterrupt
                 {
                     TaskId = item.TaskId,
                     NodeName = item.NodeName,
-                    Payload = EfCheckpointJson.FromElement(item.Payload),
-                    TaskPayload = EfCheckpointJson.FromElement(item.TaskPayload),
+                    Payload = EfCheckpointJson.FromElement(item.Payload, registry),
+                    TaskPayload = EfCheckpointJson.FromElement(item.TaskPayload, registry),
                 })
             ],
             LastNode = LastNode,
             NextNodes = [.. NextNodes],
-            InterruptPayload = EfCheckpointJson.FromElement(InterruptPayload),
+            InterruptPayload = EfCheckpointJson.FromElement(InterruptPayload, registry),
             GraphId = GraphId,
             GraphVersion = GraphVersion,
             CancelReason = CancelReason,
+            CompletedTaskIds = CompletedTaskIds ?? [],
+            TaskAttempts = new Dictionary<string, int>(TaskAttempts ?? [], StringComparer.Ordinal),
+            JoinArrivals = ToSnapshotArrivals(JoinArrivals),
+            StopReason = stopReason,
         };
     }
 
-    /// <summary>
-    ///     Materializes a snapshot from wire JSON (used by the EF value converter).
-    /// </summary>
-    public static CheckpointSnapshot DeserializeToSnapshot(string json)
+    private static Dictionary<string, IReadOnlyList<string>> ToSnapshotArrivals(
+        Dictionary<string, List<string>>? arrivals)
     {
-        var document = JsonSerializer.Deserialize<EfCheckpointDocument>(json, JsonSerializerOptions.Web)
-            ?? throw new InvalidOperationException("Checkpoint payload JSON deserialized to null.");
-        return document.ToSnapshot();
+        var result = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+        foreach (var pair in arrivals ?? [])
+        {
+            result[pair.Key] = pair.Value;
+        }
+
+        return result;
     }
 }

@@ -2,3 +2,6 @@
 Voluta.Checkpoints.S3.S3Checkpointer.ListThreadIdsAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<string!>!>!
 
 Voluta.Checkpoints.S3.S3Checkpointer.PutAsync(Voluta.Abstractions.Checkpoint.CheckpointSnapshot! snapshot, long? expectedParentStep, Voluta.Abstractions.Runtime.ICheckpointUnitOfWork? unitOfWork, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.Task!
+
+Voluta.Checkpoints.S3.S3Checkpointer.TypeRegistry.get -> Voluta.Abstractions.Serialization.CheckpointTypeRegistry?
+Voluta.Checkpoints.S3.S3Checkpointer.TypeRegistry.set -> void

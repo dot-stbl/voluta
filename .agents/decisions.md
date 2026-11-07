@@ -363,6 +363,25 @@ engine surgery; task journal needs Continue / pending-write path changes.
 
 OpenSpec: `openspec/specs/cross-thread-store/`.
 
+### D-033 — TimeProvider как абстракция времени для run-guards
+
+**Решение (2026-11-07):** deadline-гарды `RunGuards.Deadline` читают «сейчас» через
+инжектируемый `TimeProvider`: новые перегрузки
+`Deadline(DateTimeOffset at, TimeProvider)` и `Deadline(TimeSpan fromNow, TimeProvider)`;
+существующие фабрики остаются и делегируют с `TimeProvider.System` (поверхность
+аддитивная, wall-clock поведение не меняется). `DeadlineGuard` хранит провайдер и
+оценивает `GetUtcNow() >= at` — тесты замораживают/двигают время через
+`FakeTimeProvider` (`Microsoft.Extensions.TimeProvider.Testing`, только тестовая
+зависимость — ядро остаётся zero-dep, без Polly/M.E.Resilience). Публичные
+перегрузки бросают доменный `ArgumentException` на null-провайдер (стиль guard-ов
+проекта, не ThrowIfNull-хелперы). Движковый `StartedAt` (captured at run entry в
+`RunEngine`) остаётся на wall-clock `UtcNow` — вне скоупа этого решения.
+
+Подтверждено владельцем 2026-11-07 рядом с этим решением: **D-029 / D-030 —
+wire-копии per-provider остаются** (изоляция пакетов чекпойнтеров, linked-исходники
+не вводить) и **ядро остаётся zero-dep** (Polly / Microsoft.Extensions.Resilience
+не тянем).
+
 ## Open questions (remaining)
 
 1. **Command taxonomy** — approve / reject / update-state / opaque payload shapes.

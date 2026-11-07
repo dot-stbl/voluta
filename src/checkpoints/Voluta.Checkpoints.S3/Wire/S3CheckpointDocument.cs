@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Voluta.Abstractions.Checkpoint;
 using Voluta.Abstractions.Runtime;
+using Voluta.Abstractions.Serialization;
 
 namespace Voluta.Checkpoints.S3.Wire;
 
@@ -41,7 +42,21 @@ internal sealed class S3CheckpointDocument
 
     public string? CancelReason { get; set; }
 
-    public static S3CheckpointDocument FromSnapshot(CheckpointSnapshot snapshot)
+    /// <summary>v050 additive: tasks of the current step that completed (empty at boundaries).</summary>
+    public List<string>? CompletedTaskIds { get; set; }
+
+    /// <summary>v050 additive: in-progress retry attempt per task id.</summary>
+    public Dictionary<string, int>? TaskAttempts { get; set; }
+
+    /// <summary>v050 additive: join target → sources arrived in the current epoch.</summary>
+    public Dictionary<string, List<string>>? JoinArrivals { get; set; }
+
+    /// <summary>v050 additive: typed stop reason enum name behind an Interrupted snapshot.</summary>
+    public string? StopReason { get; set; }
+
+    public static S3CheckpointDocument FromSnapshot(
+        CheckpointSnapshot snapshot,
+        CheckpointTypeRegistry? registry = null)
     {
         return new S3CheckpointDocument
         {
@@ -51,7 +66,7 @@ internal sealed class S3CheckpointDocument
             Status = snapshot.Status.ToString(),
             ChannelValues = snapshot.ChannelValues.ToDictionary(
                 static pair => pair.Key,
-                static pair => S3CheckpointJson.ToElement(pair.Value),
+                pair => S3CheckpointJson.ToElement(pair.Value, registry),
                 StringComparer.Ordinal),
             ChannelVersions = new Dictionary<string, long>(snapshot.ChannelVersions, StringComparer.Ordinal),
             VersionsSeen = snapshot.VersionsSeen.ToDictionary(
@@ -60,48 +75,66 @@ internal sealed class S3CheckpointDocument
                 StringComparer.Ordinal),
             PendingWrites =
             [
-                .. snapshot.PendingWrites.Select(static write => new S3PendingWriteDocument
+                .. snapshot.PendingWrites.Select(write => new S3PendingWriteDocument
                 {
                     TaskId = write.TaskId,
                     ChannelName = write.ChannelName,
-                    Value = S3CheckpointJson.ToElement(write.Value),
+                    Value = S3CheckpointJson.ToElement(write.Value, registry),
                 })
             ],
             PendingSends =
             [
-                .. snapshot.PendingSends.Select(static send => new S3PendingSendDocument
+                .. snapshot.PendingSends.Select(send => new S3PendingSendDocument
                 {
                     NodeName = send.NodeName,
                     TaskId = send.TaskId,
-                    Payload = S3CheckpointJson.ToElement(send.Payload),
+                    Payload = S3CheckpointJson.ToElement(send.Payload, registry),
                 })
             ],
             PendingInterrupts =
             [
-                .. snapshot.PendingInterrupts.Select(static item => new S3PendingInterruptDocument
+                .. snapshot.PendingInterrupts.Select(item => new S3PendingInterruptDocument
                 {
                     TaskId = item.TaskId,
                     NodeName = item.NodeName,
-                    Payload = S3CheckpointJson.ToElement(item.Payload),
-                    TaskPayload = S3CheckpointJson.ToElement(item.TaskPayload),
+                    Payload = S3CheckpointJson.ToElement(item.Payload, registry),
+                    TaskPayload = S3CheckpointJson.ToElement(item.TaskPayload, registry),
                 })
             ],
             LastNode = snapshot.LastNode,
             NextNodes = [.. snapshot.NextNodes],
-            InterruptPayload = S3CheckpointJson.ToElement(snapshot.InterruptPayload),
+            InterruptPayload = S3CheckpointJson.ToElement(snapshot.InterruptPayload, registry),
             GraphId = snapshot.GraphId,
             GraphVersion = snapshot.GraphVersion,
             CancelReason = snapshot.CancelReason,
+            CompletedTaskIds = snapshot.CompletedTaskIds is { Count: > 0 }
+                ? [.. snapshot.CompletedTaskIds]
+                : null,
+            TaskAttempts = snapshot.TaskAttempts is { Count: > 0 }
+                ? new Dictionary<string, int>(snapshot.TaskAttempts, StringComparer.Ordinal)
+                : null,
+            JoinArrivals = snapshot.JoinArrivals is { Count: > 0 }
+                ? snapshot.JoinArrivals.ToDictionary(
+                    static pair => pair.Key,
+                    static pair => new List<string>(pair.Value),
+                    StringComparer.Ordinal)
+                : null,
+            StopReason = snapshot.StopReason == RunStopReason.None
+                ? null
+                : snapshot.StopReason.ToString(),
         };
     }
 
-    public CheckpointSnapshot ToSnapshot()
+    public CheckpointSnapshot ToSnapshot(CheckpointTypeRegistry? registry = null)
     {
         CheckpointWireFormat.EnsureSupported(FormatVersion);
 
         var status = Enum.TryParse<GraphRunStatus>(Status, ignoreCase: true, out var parsed)
             ? parsed
             : GraphRunStatus.Running;
+        var stopReason = Enum.TryParse<RunStopReason>(StopReason, ignoreCase: true, out var parsedReason)
+            ? parsedReason
+            : RunStopReason.None;
 
         return new CheckpointSnapshot
         {
@@ -111,7 +144,7 @@ internal sealed class S3CheckpointDocument
             Status = status,
             ChannelValues = ChannelValues.ToDictionary(
                 static pair => pair.Key,
-                static pair => S3CheckpointJson.FromElement(pair.Value),
+                pair => S3CheckpointJson.FromElement(pair.Value, registry),
                 StringComparer.Ordinal),
             ChannelVersions = new Dictionary<string, long>(ChannelVersions, StringComparer.Ordinal),
             VersionsSeen = VersionsSeen.ToDictionary(
@@ -122,38 +155,54 @@ internal sealed class S3CheckpointDocument
                 StringComparer.Ordinal),
             PendingWrites =
             [
-                .. PendingWrites.Select(static write => new PendingWrite
+                .. PendingWrites.Select(write => new PendingWrite
                 {
                     TaskId = write.TaskId,
                     ChannelName = write.ChannelName,
-                    Value = S3CheckpointJson.FromElement(write.Value),
+                    Value = S3CheckpointJson.FromElement(write.Value, registry),
                 })
             ],
             PendingSends =
             [
-                .. PendingSends.Select(static send => new PendingSend
+                .. PendingSends.Select(send => new PendingSend
                 {
                     NodeName = send.NodeName,
                     TaskId = send.TaskId,
-                    Payload = S3CheckpointJson.FromElement(send.Payload),
+                    Payload = S3CheckpointJson.FromElement(send.Payload, registry),
                 })
             ],
             PendingInterrupts =
             [
-                .. PendingInterrupts.Select(static item => new PendingInterrupt
+                .. PendingInterrupts.Select(item => new PendingInterrupt
                 {
                     TaskId = item.TaskId,
                     NodeName = item.NodeName,
-                    Payload = S3CheckpointJson.FromElement(item.Payload),
-                    TaskPayload = S3CheckpointJson.FromElement(item.TaskPayload),
+                    Payload = S3CheckpointJson.FromElement(item.Payload, registry),
+                    TaskPayload = S3CheckpointJson.FromElement(item.TaskPayload, registry),
                 })
             ],
             LastNode = LastNode,
             NextNodes = [.. NextNodes],
-            InterruptPayload = S3CheckpointJson.FromElement(InterruptPayload),
+            InterruptPayload = S3CheckpointJson.FromElement(InterruptPayload, registry),
             GraphId = GraphId,
             GraphVersion = GraphVersion,
             CancelReason = CancelReason,
+            CompletedTaskIds = CompletedTaskIds ?? [],
+            TaskAttempts = new Dictionary<string, int>(TaskAttempts ?? [], StringComparer.Ordinal),
+            JoinArrivals = ToSnapshotArrivals(JoinArrivals),
+            StopReason = stopReason,
         };
+    }
+
+    private static Dictionary<string, IReadOnlyList<string>> ToSnapshotArrivals(
+        Dictionary<string, List<string>>? arrivals)
+    {
+        var result = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+        foreach (var pair in arrivals ?? [])
+        {
+            result[pair.Key] = pair.Value;
+        }
+
+        return result;
     }
 }

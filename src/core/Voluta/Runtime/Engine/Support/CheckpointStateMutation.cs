@@ -130,6 +130,11 @@ internal static class CheckpointStateMutation
             VersionsSeen = CloneVersionsSeen(source.VersionsSeen),
             PendingWrites = [.. source.PendingWrites],
             PendingSends = [.. source.PendingSends],
+            PendingInterrupts = [.. source.PendingInterrupts],
+            CompletedTaskIds = [.. source.CompletedTaskIds],
+            TaskAttempts = CloneTaskAttempts(source.TaskAttempts),
+            JoinArrivals = CloneJoinArrivals(source.JoinArrivals),
+            StopReason = source.StopReason,
             LastNode = source.LastNode,
             NextNodes = [.. source.NextNodes],
             InterruptPayload = source.InterruptPayload,
@@ -184,6 +189,26 @@ internal static class CheckpointStateMutation
         foreach (var (nodeName, map) in seen)
         {
             clone[nodeName] = new Dictionary<string, long>(map, StringComparer.Ordinal);
+        }
+
+        return clone;
+    }
+
+    public static Dictionary<string, int> CloneTaskAttempts(
+        IReadOnlyDictionary<string, int> attempts)
+    {
+        return new Dictionary<string, int>(attempts, StringComparer.Ordinal);
+    }
+
+    public static Dictionary<string, IReadOnlyList<string>> CloneJoinArrivals(
+        IReadOnlyDictionary<string, IReadOnlyList<string>> arrivals)
+    {
+        var clone = new Dictionary<string, IReadOnlyList<string>>(
+            arrivals.Count,
+            StringComparer.Ordinal);
+        foreach (var (target, sources) in arrivals)
+        {
+            clone[target] = [.. sources];
         }
 
         return clone;

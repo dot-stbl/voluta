@@ -54,6 +54,9 @@ public static class VolutaEventIds
     /// <summary><see cref="VolutaErrorCodes.GraphInvalidContinue" />.</summary>
     public static readonly EventId GraphInvalidContinue = new(2023, VolutaErrorCodes.GraphInvalidContinue);
 
+    /// <summary><see cref="VolutaErrorCodes.GraphInvalidRetryPolicy" />.</summary>
+    public static readonly EventId GraphInvalidRetryPolicy = new(2028, VolutaErrorCodes.GraphInvalidRetryPolicy);
+
     /// <summary><see cref="VolutaErrorCodes.GraphThreadNotFound" />.</summary>
     public static readonly EventId GraphThreadNotFound = new(2024, VolutaErrorCodes.GraphThreadNotFound);
 
@@ -113,6 +116,7 @@ public static class VolutaEventIds
         GraphVersionMismatch,
         GraphInvalidCancel,
         GraphInvalidContinue,
+        GraphInvalidRetryPolicy,
         GraphThreadNotFound,
         GraphStepNotFound,
         ChannelConcurrentUpdate,

@@ -54,7 +54,7 @@ public sealed class FileCheckpointWireVersionShould
         var document = FileCheckpointDocument.FromSnapshot(CreateSnapshot());
         document.FormatVersion = 99;
 
-        var exception = Should.Throw<CheckpointStoreException>(document.ToSnapshot);
+        var exception = Should.Throw<CheckpointStoreException>(() => document.ToSnapshot());
 
         exception.Code.ShouldBe(CheckpointWireFormat.UnsupportedCode);
         exception.Message.ShouldContain("99");

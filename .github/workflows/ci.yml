@@ -1,5 +1,6 @@
 # PR gate for Voluta: restore + build (analyzers + format) + test + pack smoke.
-# Release flow lives in publish.yml (OIDC trusted publishing on v*.*.* tags).
+# Release flow lives in publish.yml (API-key push by default; optional OIDC trusted
+# publishing behind vars.NUGET_OIDC on v*.*.* tags).
 
 name: ci
 
@@ -23,6 +24,7 @@ jobs:
   pr-dotnet:
     name: pr-dotnet
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -44,20 +46,71 @@ jobs:
       - name: build
         run: dotnet build voluta.slnx -c Debug --nologo
 
+      # Explicit project list (v050): every tests/unit/** project is named so a new unit
+      # project fails CI loudly if not registered, and provider unit projects always run.
+      # The old `--filter "FullyQualifiedName!~Integration"` name filter silently included
+      # or excluded projects on renames. Integration projects (tests/integration) never match.
       - name: unit tests
         run: |
-          dotnet test voluta.slnx \
-            --filter "FullyQualifiedName!~Integration" \
-            --no-build \
-            --nologo \
-            --logger "console;verbosity=normal"
+          set -euo pipefail
+          trx_dir="${RUNNER_TEMP}/trx"
+          mkdir -p "$trx_dir"
+          unit_projects=(
+            tests/unit/Voluta.Unit/Voluta.Unit.csproj
+            tests/unit/Voluta.Abstractions.Unit/Voluta.Abstractions.Unit.csproj
+            tests/unit/Voluta.Architecture.Unit/Voluta.Architecture.Unit.csproj
+            tests/unit/Voluta.DependencyInjection.Unit/Voluta.DependencyInjection.Unit.csproj
+            tests/unit/Voluta.Generators.Unit/Voluta.Generators.Unit.csproj
+            tests/unit/Voluta.Hosting.Unit/Voluta.Hosting.Unit.csproj
+            tests/unit/Voluta.OpenTelemetry.Unit/Voluta.OpenTelemetry.Unit.csproj
+            tests/unit/Voluta.Testing.Unit/Voluta.Testing.Unit.csproj
+            tests/unit/Voluta.Agents.AI.Unit/Voluta.Agents.AI.Unit.csproj
+            tests/unit/checkpoints/Voluta.Checkpoints.File.Unit/Voluta.Checkpoints.File.Unit.csproj
+            tests/unit/checkpoints/Voluta.Checkpoints.Redis.Unit/Voluta.Checkpoints.Redis.Unit.csproj
+            tests/unit/checkpoints/Voluta.Checkpoints.S3.Unit/Voluta.Checkpoints.S3.Unit.csproj
+            tests/unit/checkpoints/Voluta.Checkpoints.EntityFrameworkCore.Unit/Voluta.Checkpoints.EntityFrameworkCore.Unit.csproj
+          )
+          for proj in "${unit_projects[@]}"; do
+            echo "testing $proj"
+            dotnet test "$proj" \
+              --no-build \
+              --nologo \
+              --logger "console;verbosity=normal" \
+              --logger "trx;logfiledirectory=$trx_dir"
+          done
 
+      - name: upload test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: ${{ runner.temp }}/trx
+          if-no-files-found: ignore
+
+      # Pack smoke with an explicit packable list (v050): everything under src except
+      # Voluta.Testing (IsPackable=false). Voluta.UI has no explicit IsPackable and is
+      # packable by default (publish.yml packs it too) — it stays here for list parity.
+      # templates/Voluta.Templates is packed by publish.yml's own dedicated step.
       - name: pack smoke
         run: |
           set -euo pipefail
           pack_out="${RUNNER_TEMP}/pack-smoke"
           mkdir -p "$pack_out"
-          for proj in $(find src -name "*.csproj"); do
+          packable_projects=(
+            src/agents/Voluta.Agents.AI/Voluta.Agents.AI.csproj
+            src/checkpoints/Voluta.Checkpoints.EntityFrameworkCore/Voluta.Checkpoints.EntityFrameworkCore.csproj
+            src/checkpoints/Voluta.Checkpoints.File/Voluta.Checkpoints.File.csproj
+            src/checkpoints/Voluta.Checkpoints.Redis/Voluta.Checkpoints.Redis.csproj
+            src/checkpoints/Voluta.Checkpoints.S3/Voluta.Checkpoints.S3.csproj
+            src/core/Voluta.Abstractions/Voluta.Abstractions.csproj
+            src/core/Voluta.DependencyInjection/Voluta.DependencyInjection.csproj
+            src/core/Voluta/Voluta.csproj
+            src/devtools/Voluta.Generators/Voluta.Generators.csproj
+            src/hosting/Voluta.Hosting/Voluta.Hosting.csproj
+            src/hosting/Voluta.OpenTelemetry/Voluta.OpenTelemetry.csproj
+            src/ops/Voluta.UI/Voluta.UI.csproj
+          )
+          for proj in "${packable_projects[@]}"; do
             echo "packing $proj"
             dotnet pack "$proj" -c Debug --no-build --output "$pack_out"
           done

@@ -4,6 +4,7 @@ using Voluta.Abstractions.Checkpoint;
 using Voluta.Abstractions.Diagnostics;
 using Voluta.Abstractions.Runtime;
 using Voluta.Diagnostics;
+using Voluta.Runtime.Engine.Support;
 
 namespace Voluta.Checkpoint;
 
@@ -220,46 +221,28 @@ public sealed class InMemoryCheckpointer : ICheckpointer, IThreadDiscovery
 
 /// <summary>
 ///     Deep-enough clone of C-shape snapshots so callers cannot mutate stored history.
+///     Dictionary copying delegates to the shared <see cref="CheckpointStateMutation" />
+///     clone helpers (the same semantics as fork / cancel-park copies).
 /// </summary>
 file static class InMemoryCheckpointClone
 {
     public static CheckpointSnapshot Clone(CheckpointSnapshot snapshot)
     {
-        var channelValues = new Dictionary<string, object?>(
-            snapshot.ChannelValues.Count,
-            StringComparer.Ordinal);
-        foreach (var (key, value) in snapshot.ChannelValues)
-        {
-            channelValues[key] = value;
-        }
-
-        var channelVersions = new Dictionary<string, long>(
-            snapshot.ChannelVersions.Count,
-            StringComparer.Ordinal);
-        foreach (var (key, value) in snapshot.ChannelVersions)
-        {
-            channelVersions[key] = value;
-        }
-
-        var versionsSeen = new Dictionary<string, IReadOnlyDictionary<string, long>>(
-            snapshot.VersionsSeen.Count,
-            StringComparer.Ordinal);
-        foreach (var (nodeName, map) in snapshot.VersionsSeen)
-        {
-            versionsSeen[nodeName] = new Dictionary<string, long>(map, StringComparer.Ordinal);
-        }
-
         return new CheckpointSnapshot
         {
             FormatVersion = snapshot.FormatVersion,
             ThreadId = snapshot.ThreadId,
             Step = snapshot.Step,
             Status = snapshot.Status,
-            ChannelValues = channelValues,
-            ChannelVersions = channelVersions,
-            VersionsSeen = versionsSeen,
+            ChannelValues = CheckpointStateMutation.CloneValues(snapshot.ChannelValues),
+            ChannelVersions = CheckpointStateMutation.CloneVersions(snapshot.ChannelVersions),
+            VersionsSeen = CheckpointStateMutation.CloneVersionsSeen(snapshot.VersionsSeen),
             PendingWrites = [.. snapshot.PendingWrites],
             PendingSends = [.. snapshot.PendingSends],
+            CompletedTaskIds = [.. snapshot.CompletedTaskIds],
+            TaskAttempts = CheckpointStateMutation.CloneTaskAttempts(snapshot.TaskAttempts),
+            JoinArrivals = CheckpointStateMutation.CloneJoinArrivals(snapshot.JoinArrivals),
+            StopReason = snapshot.StopReason,
             LastNode = snapshot.LastNode,
             NextNodes = [.. snapshot.NextNodes],
             InterruptPayload = snapshot.InterruptPayload,

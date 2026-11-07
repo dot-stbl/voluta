@@ -4,7 +4,7 @@ namespace Voluta.Graph;
 
 /// <summary>
 ///     DI-friendly node body: resolved from <see cref="GraphContext.Services" /> when registered via
-///     <see cref="Builder.StateGraph.AddNode{TNode}" />.
+///     <see cref="Builder.StateGraph.AddNode{TNode}(string)" />.
 /// </summary>
 public interface IGraphNode
 {

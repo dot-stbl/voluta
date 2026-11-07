@@ -1,7 +1,15 @@
-# Publish Voluta NuGet packages on a v*.*.* tag.
+# Publish Voluta NuGet packages on a v*.*.* tag (or an opted-in workflow_dispatch).
 # Also packs product docs into docs.tgz and attaches it to the GitHub Release
 # so docs.stbl.space can pull without duplicating markdown elsewhere.
-# Trust flow: GitHub Actions OIDC -> nuget.org trusted publishing.
+#
+# Push credentials, honestly:
+#   - DEFAULT: API key push via secrets.NUGET_API_KEY (dotnet nuget push --api-key).
+#   - OPTIONAL: OIDC trusted publishing (nuget/login@v1) only behind the repository
+#     variable NUGET_OIDC == 'true' (see docs/0.x/nuget-trusted-publisher.md).
+#   - workflow_dispatch with dry_run=false now pushes too (same credential branches);
+#     dry_run=true never pushes. Tag pushes remain the canonical release path.
+#   - On tag events the package versions are verified against the tag BEFORE any push
+#     (a v0.5.1 tag publishing 0.5.0 packages exits 1).
 
 name: publish
 
@@ -12,7 +20,7 @@ on:
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Pack only, do not push (sanity check)"
+        description: "Pack only, do not push (sanity check). dry_run=false DOES push."
         required: false
         type: boolean
         default: false
@@ -30,6 +38,7 @@ jobs:
     name: publish
     runs-on: ubuntu-latest
     environment: nuget
+    timeout-minutes: 30
     steps:
       - name: checkout
         uses: actions/checkout@v4
@@ -68,7 +77,21 @@ jobs:
           set -euo pipefail
           pack_out="${RUNNER_TEMP}/packages"
           mkdir -p "$pack_out"
-          for proj in $(find src -name "*.csproj" -not -path "*/samples/*" -not -path "*/tests/*"); do
+          packable_projects=(
+            src/agents/Voluta.Agents.AI/Voluta.Agents.AI.csproj
+            src/checkpoints/Voluta.Checkpoints.EntityFrameworkCore/Voluta.Checkpoints.EntityFrameworkCore.csproj
+            src/checkpoints/Voluta.Checkpoints.File/Voluta.Checkpoints.File.csproj
+            src/checkpoints/Voluta.Checkpoints.Redis/Voluta.Checkpoints.Redis.csproj
+            src/checkpoints/Voluta.Checkpoints.S3/Voluta.Checkpoints.S3.csproj
+            src/core/Voluta.Abstractions/Voluta.Abstractions.csproj
+            src/core/Voluta.DependencyInjection/Voluta.DependencyInjection.csproj
+            src/core/Voluta/Voluta.csproj
+            src/devtools/Voluta.Generators/Voluta.Generators.csproj
+            src/hosting/Voluta.Hosting/Voluta.Hosting.csproj
+            src/hosting/Voluta.OpenTelemetry/Voluta.OpenTelemetry.csproj
+            src/ops/Voluta.UI/Voluta.UI.csproj
+          )
+          for proj in "${packable_projects[@]}"; do
             name="$(basename "$proj" .csproj)"
             echo "packing $proj"
             # Analyzer package: no symbols; library packages get snupkg.
@@ -102,8 +125,60 @@ jobs:
           test -n "$templates_nupkg"
           echo "core=$core_nupkg gen=$gen_nupkg templates=$templates_nupkg"
 
-      - name: push to nuget.org
+      # Footgun guard (v050): a v0.5.1 tag that built 0.5.0 packages must fail BEFORE
+      # any push. Applies to tag events only — dispatch publishes whatever
+      # Directory.Build.props declares.
+      - name: verify tag vs packages
         if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          expected="${GITHUB_REF_NAME#v}"
+          pack_out="${RUNNER_TEMP}/packages"
+          mismatch=0
+          for nupkg in "$pack_out"/*.nupkg; do
+            [ -e "$nupkg" ] || continue
+            version="$(basename "$nupkg" | sed -E 's/.*\.([0-9]+\.[0-9]+\.[0-9]+)(-.*)?\.nupkg$/\1\2/')"
+            if [ "$version" != "$expected" ]; then
+              echo "VERSION MISMATCH: $(basename "$nupkg") is '$version', tag expects '$expected'"
+              mismatch=1
+            fi
+          done
+          if [ "$mismatch" -ne 0 ]; then
+            echo "Tag/package version verification failed — refusing to push."
+            exit 1
+          fi
+          echo "All package versions match tag $GITHUB_REF_NAME (v$expected)."
+
+      # Credential branches are mutually exclusive:
+      #   OIDC trusted publishing only behind vars.NUGET_OIDC == 'true'
+      #   (requires secret NUGET_USER = nuget.org account name — see
+      #   docs/0.x/nuget-trusted-publisher.md); API-key push stays the default path.
+      # push-or-opted-dispatch = tag push, or a dispatch run that asked to push
+      # (inputs.dry_run == false).
+      - name: NuGet OIDC login
+        if: vars.NUGET_OIDC == 'true' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false))
+        id: nuget-login
+        uses: nuget/login@v1
+        with:
+          user: ${{ secrets.NUGET_USER }}
+      - name: push to nuget.org (OIDC trusted publishing)
+        if: vars.NUGET_OIDC == 'true' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false))
+        run: |
+          set -euo pipefail
+          pack_out="${RUNNER_TEMP}/packages"
+          dotnet nuget push "$pack_out/*.nupkg" \
+            --source https://api.nuget.org/v3/index.json \
+            --api-key "${{ steps.nuget-login.outputs.nuget-api-key }}" \
+            --skip-duplicate
+          if ls "$pack_out"/*.snupkg >/dev/null 2>&1; then
+            dotnet nuget push "$pack_out/*.snupkg" \
+              --source https://api.nuget.org/v3/index.json \
+              --api-key "${{ steps.nuget-login.outputs.nuget-api-key }}" \
+              --skip-duplicate
+          fi
+
+      - name: push to nuget.org (API key)
+        if: vars.NUGET_OIDC != 'true' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false))
         run: |
           set -euo pipefail
           pack_out="${RUNNER_TEMP}/packages"
@@ -118,6 +193,35 @@ jobs:
               --skip-duplicate
           fi
 
+      # Release notes from CHANGELOG.md (v050): extract the tagged version's section;
+      # fall back to generated notes when the section is missing (never fail a release
+      # on a doc miss).
+      - name: release notes from changelog
+        if: github.event_name == 'push'
+        run: |
+          set -euo pipefail
+          expected="${GITHUB_REF_NAME#v}"
+          notes="${RUNNER_TEMP}/notes.md"
+          if test -f CHANGELOG.md \
+            && awk -v ver="$expected" '
+              BEGIN { found = 0 }
+              /^## \[/ {
+                if (found) { exit }
+                if (index($0, "## [" ver "]") == 1) { found = 1; next }
+              }
+              found { print }
+            ' CHANGELOG.md > "$notes" \
+            && test -s "$notes"; then
+            echo "Release notes extracted from CHANGELOG.md for $expected."
+          else
+            echo "No CHANGELOG.md section for $expected — falling back to --generate-notes."
+            rm -f "$notes"
+            echo "$GITHUB_REF_NAME" > "${RUNNER_TEMP}/notes-mode"
+          fi
+          if test -s "$notes"; then
+            echo "notes-file" > "${RUNNER_TEMP}/notes-mode"
+          fi
+
       - name: upload docs.tgz to GitHub Release
         if: github.event_name == 'push'
         env:
@@ -125,8 +229,16 @@ jobs:
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
-          if ! gh release view "$tag" >/dev/null 2>&1; then
-            gh release create "$tag" --generate-notes --verify-tag
+          notes="${RUNNER_TEMP}/notes.md"
+          mode="$(cat "${RUNNER_TEMP}/notes-mode" 2>/dev/null || echo generated)"
+          if [ "$mode" = "notes-file" ] && [ -s "$notes" ]; then
+            if ! gh release view "$tag" >/dev/null 2>&1; then
+              gh release create "$tag" --notes-file "$notes" --verify-tag
+            fi
+          else
+            if ! gh release view "$tag" >/dev/null 2>&1; then
+              gh release create "$tag" --generate-notes --verify-tag
+            fi
           fi
           gh release upload "$tag" "${RUNNER_TEMP}/docs.tgz" --clobber
 

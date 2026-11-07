@@ -301,6 +301,73 @@ public sealed class UpdateStateForkReplayShould
         messages.ShouldContain("patched");
     }
 
+    [Fact(DisplayName = "Given Interrupted source, when ForkAsync, then fork carries PendingInterrupts and resumes")]
+    public async Task ForkInterruptedCarriesPendingInterrupts()
+    {
+        var checkpointer = new InMemoryCheckpointer();
+        // Fan-out: both branches interrupt in the same superstep → multi-interrupt snapshot.
+        var graph = new StateGraph()
+            .AddChannel("messages", ChannelKind.Append)
+            .AddNode(
+                "left",
+                static (context, _) => context.IsResume
+                    ? Task.FromResult<NodeResult>(
+                        NodeResult.Continue(new ChannelWrite("messages", "left-resumed")))
+                    : Task.FromResult<NodeResult>(NodeResult.Interrupt("need-left")))
+            .AddNode(
+                "right",
+                static (context, _) => context.IsResume
+                    ? Task.FromResult<NodeResult>(
+                        NodeResult.Continue(new ChannelWrite("messages", "right-resumed")))
+                    : Task.FromResult<NodeResult>(NodeResult.Interrupt("need-right")))
+            .AddEdge(GraphConstants.Start, "left")
+            .AddEdge(GraphConstants.Start, "right")
+            .AddEdge("left", GraphConstants.End)
+            .AddEdge("right", GraphConstants.End)
+            .Compile(checkpointer);
+
+        await graph.InvokeAsync(
+            [],
+            new RunOptions { ThreadId = "fork-int-src", StreamMode = StreamMode.Events });
+
+        var source = await checkpointer.GetAsync("fork-int-src");
+        source.ShouldNotBeNull();
+        source.Status.ShouldBe(GraphRunStatus.Interrupted);
+        source.PendingInterrupts.Count.ShouldBe(2);
+
+        var forkStep = (await graph.GetHistoryAsync("fork-int-src"))[^1].Step;
+        await graph.ForkAsync("fork-int-src", forkStep, "fork-int-child");
+
+        // The fork must carry the full interrupt state, not just the compat payload.
+        var forked = await checkpointer.GetAsync("fork-int-child");
+        forked.ShouldNotBeNull();
+        forked.Status.ShouldBe(GraphRunStatus.Interrupted);
+        forked.InterruptPayload.ShouldBe(source.InterruptPayload);
+        forked.PendingInterrupts.Count.ShouldBe(source.PendingInterrupts.Count);
+        forked.PendingInterrupts.Select(static item => item.TaskId)
+            .ShouldBe(source.PendingInterrupts.Select(static item => item.TaskId));
+        forked.PendingInterrupts.Select(static item => item.Payload)
+            .ShouldBe(source.PendingInterrupts.Select(static item => item.Payload));
+
+        // Resume on the fork resolves every pending interrupt — no invalid resume/command.
+        var terminal = await graph.ResumeInvokeAsync(
+            "fork-int-child",
+            Command.ApproveResumes(
+                new Dictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    ["left"] = "ok-left",
+                    ["right"] = "ok-right",
+                }));
+
+        terminal.Kind.ShouldBe(StreamEventKind.End);
+        var done = await graph.GetStateAsync("fork-int-child");
+        done.ShouldNotBeNull();
+        done.Status.ShouldBe(GraphRunStatus.Done);
+        var messages = done.Values["messages"].ShouldBeOfType<List<object?>>();
+        messages.ShouldContain("left-resumed");
+        messages.ShouldContain("right-resumed");
+    }
+
     private static Voluta.Graph.CompiledGraph BuildLinear(ICheckpointer checkpointer)
     {
         return new StateGraph()
