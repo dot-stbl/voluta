@@ -275,12 +275,16 @@ public interface IRunGuard
 public static class RunGuards
 {
     public static IRunGuard Deadline(DateTimeOffset at);      // reason "deadline_exceeded"
-    public static IRunGuard Deadline(TimeSpan fromNow);       // at = DateTimeOffset.UtcNow + fromNow
+    public static IRunGuard Deadline(TimeSpan fromNow);       // at = provider now + fromNow, anchored at this call
+    public static IRunGuard Deadline(DateTimeOffset at, TimeProvider timeProvider);
+    public static IRunGuard Deadline(TimeSpan fromNow, TimeProvider timeProvider);
     public static IRunGuard Budget(Func<RunGuardContext, bool> isExhausted); // reason "budget_exhausted"
 }
 ```
 
 Note `fromNow` is anchored at construction time (documented) — a guard instance created before a long compile still measures from its construction; hosts wanting run-relative deadlines capture `StartedAt` from the context via `Budget` or pass absolute `DateTimeOffset`.
+
+Time source (owner decision 2026-11-07): deadline guards read "now" through an injectable `TimeProvider` — `DeadlineGuard` stores the provider and evaluates `GetUtcNow() >= at`. The provider-less factories remain and delegate with `TimeProvider.System` (default), so wall-clock behavior is unchanged; the overloads taking an explicit provider let hosts freeze/advance time deterministically in tests (`FakeTimeProvider`, `Microsoft.Extensions.TimeProvider.Testing` — test-only dependency, core stays zero-dep). A `null` provider on the public overloads throws a domain `ArgumentException` (house guard style, no ThrowIfNull helpers). The engine's own `StartedAt` capture keeps reading wall-clock `UtcNow` at run entry — outside the scope of this decision.
 
 ```csharp
 // CheckpointSnapshot — typed stop reason (status stays Interrupted; no enum changes)
@@ -347,7 +351,7 @@ The doc cites only real symbols (verified against HEAD: the four anchors above);
 
 ## PublicAPI.Unshipped additions (apply step adds exact strings; analyzer output gates)
 
-- **Voluta.Abstractions**: `RetryPolicy` (+`Exponential`/`ShouldRetry`/`DelayFor`), `RunStopReason`, `RunGuardAction`, `RunGuardContext`, `RunGuardDecision` (+`Continue`/`Stop`), `IRunGuard`, `RunGuards` (+`Deadline` ×2/`Budget`), `CheckpointTypeRegistry` (+members), `IRegistryAwareCheckpointer`, `VolutaErrorCodes.GraphInvalidRetryPolicy`, `CheckpointSnapshot.CompletedTaskIds`, `CheckpointSnapshot.TaskAttempts`, `CheckpointSnapshot.JoinArrivals`, `CheckpointSnapshot.StopReason`.
+- **Voluta.Abstractions**: `RetryPolicy` (+`Exponential`/`ShouldRetry`/`DelayFor`), `RunStopReason`, `RunGuardAction`, `RunGuardContext`, `RunGuardDecision` (+`Continue`/`Stop`), `IRunGuard`, `RunGuards` (+`Deadline` ×4/`Budget` — two provider-less factories + two `TimeProvider` overloads), `CheckpointTypeRegistry` (+members), `IRegistryAwareCheckpointer`, `VolutaErrorCodes.GraphInvalidRetryPolicy`, `CheckpointSnapshot.CompletedTaskIds`, `CheckpointSnapshot.TaskAttempts`, `CheckpointSnapshot.JoinArrivals`, `CheckpointSnapshot.StopReason`.
 - **Voluta**: `StateGraph.AddNode` ×4 new overloads (options variant of the DI overload + handler + instance + factory), `StateGraph.AddEdge(string[] sources, string target)` (new overload), `NodeOptions`, `CompileOptions.InterruptBefore/InterruptAfter/RunGuards/CheckpointTypes` (new init-only properties), `CompileOptions.WithoutRecursionLimit()`, `RecursionLimit.Unlimited`, `GraphContext.Attempt` + separate 11-parameter ctor overload. (`GraphTopology.NodeRetries/JoinSources/InterruptBefore/InterruptAfter` get **no PublicAPI lines** — `GraphTopology` is internal.)
 - **Voluta.Checkpoints.File/Redis/S3/EntityFrameworkCore**: implementations of `IRegistryAwareCheckpointer` (member additions per provider; `File`/`S3`/`Redis`/`Ef` `EnsureAllowed` registry-aware variants stay internal — no public surface beyond the capability interface unless provider options expose it, which they do not in this design).
 

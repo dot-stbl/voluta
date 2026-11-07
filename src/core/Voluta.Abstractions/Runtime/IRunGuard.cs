@@ -70,6 +70,10 @@ public interface IRunGuard
 ///     created before a long compile still measures from its construction. Hosts wanting a
 ///     run-relative deadline pass an absolute <see cref="DateTimeOffset" /> or capture
 ///     <see cref="RunGuardContext.StartedAt" /> via <see cref="Budget" />.
+///     Deadline guards read the current time through a <see cref="TimeProvider" />: the
+///     provider-less factories default to <see cref="TimeProvider.System" /> (wall-clock
+///     behavior unchanged), while the overloads taking an explicit provider let hosts
+///     freeze or advance time deterministically in tests (<c>FakeTimeProvider</c>).
 /// </remarks>
 public static class RunGuards
 {
@@ -86,7 +90,7 @@ public static class RunGuards
     /// <returns>Guard parking the run with reason <c>deadline_exceeded</c>.</returns>
     public static IRunGuard Deadline(DateTimeOffset at)
     {
-        return new DeadlineGuard(at);
+        return new DeadlineGuard(at, TimeProvider.System);
     }
 
     /// <summary>
@@ -96,7 +100,37 @@ public static class RunGuards
     /// <returns>Guard parking the run with reason <c>deadline_exceeded</c>.</returns>
     public static IRunGuard Deadline(TimeSpan fromNow)
     {
-        return new DeadlineGuard(DateTimeOffset.UtcNow.Add(fromNow));
+        return new DeadlineGuard(TimeProvider.System.GetUtcNow().Add(fromNow), TimeProvider.System);
+    }
+
+    /// <summary>
+    ///     Stops the run once <paramref name="at" /> has passed, reading "now" through
+    ///     <paramref name="timeProvider" /> (injectable clock for deterministic tests).
+    /// </summary>
+    /// <param name="at">Absolute deadline.</param>
+    /// <param name="timeProvider">Time source the guard reads on every evaluation.</param>
+    /// <returns>Guard parking the run with reason <c>deadline_exceeded</c>.</returns>
+    /// <exception cref="ArgumentException"><paramref name="timeProvider" /> is <see langword="null" />.</exception>
+    public static IRunGuard Deadline(DateTimeOffset at, TimeProvider timeProvider)
+    {
+        return timeProvider is null
+            ? throw new ArgumentException("Time provider must be non-null.", nameof(timeProvider))
+            : new DeadlineGuard(at, timeProvider);
+    }
+
+    /// <summary>
+    ///     Stops the run once <paramref name="fromNow" /> — anchored at this call against
+    ///     <paramref name="timeProvider" /> — has elapsed (injectable clock for deterministic tests).
+    /// </summary>
+    /// <param name="fromNow">Relative duration from guard construction.</param>
+    /// <param name="timeProvider">Time source the guard reads on every evaluation.</param>
+    /// <returns>Guard parking the run with reason <c>deadline_exceeded</c>.</returns>
+    /// <exception cref="ArgumentException"><paramref name="timeProvider" /> is <see langword="null" />.</exception>
+    public static IRunGuard Deadline(TimeSpan fromNow, TimeProvider timeProvider)
+    {
+        return timeProvider is null
+            ? throw new ArgumentException("Time provider must be non-null.", nameof(timeProvider))
+            : new DeadlineGuard(timeProvider.GetUtcNow().Add(fromNow), timeProvider);
     }
 
     /// <summary>
@@ -110,11 +144,11 @@ public static class RunGuards
         return new BudgetGuard(isExhausted);
     }
 
-    private sealed class DeadlineGuard(DateTimeOffset at) : IRunGuard
+    private sealed class DeadlineGuard(DateTimeOffset at, TimeProvider timeProvider) : IRunGuard
     {
         public RunGuardDecision Evaluate(RunGuardContext context)
         {
-            return DateTimeOffset.UtcNow >= at
+            return timeProvider.GetUtcNow() >= at
                 ? RunGuardDecision.Stop(DeadlineExceeded)
                 : RunGuardDecision.Continue;
         }

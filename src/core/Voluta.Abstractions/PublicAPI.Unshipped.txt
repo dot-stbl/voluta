@@ -207,3 +207,5 @@ static Voluta.Abstractions.Runtime.RetryPolicy.Exponential(int maxAttempts, Syst
 static Voluta.Abstractions.Runtime.RunGuards.Budget(System.Func<Voluta.Abstractions.Runtime.RunGuardContext!, bool>! isExhausted) -> Voluta.Abstractions.Runtime.IRunGuard!
 static Voluta.Abstractions.Runtime.RunGuards.Deadline(System.DateTimeOffset at) -> Voluta.Abstractions.Runtime.IRunGuard!
 static Voluta.Abstractions.Runtime.RunGuards.Deadline(System.TimeSpan fromNow) -> Voluta.Abstractions.Runtime.IRunGuard!
+static Voluta.Abstractions.Runtime.RunGuards.Deadline(System.DateTimeOffset at, System.TimeProvider! timeProvider) -> Voluta.Abstractions.Runtime.IRunGuard!
+static Voluta.Abstractions.Runtime.RunGuards.Deadline(System.TimeSpan fromNow, System.TimeProvider! timeProvider) -> Voluta.Abstractions.Runtime.IRunGuard!

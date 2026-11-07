@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Time.Testing;
 using Shouldly;
 using Voluta.Abstractions.Channels;
 using Voluta.Abstractions.Results;
@@ -151,5 +152,89 @@ public sealed class RunGuardShould
         var messages = done.Values["messages"].ShouldBeOfType<List<object?>>();
         messages.ShouldContain("a");
         messages.ShouldContain("b");
+    }
+
+    [Fact(DisplayName = "Given an absolute deadline guard on a FakeTimeProvider, when time advances to exactly the deadline, then the guard trips precisely at the boundary")]
+    public void AbsoluteDeadlineTripsExactlyOnDeadline()
+    {
+        var clock = new FakeTimeProvider();
+        var deadline = clock.GetUtcNow().AddMinutes(10);
+        var guard = RunGuards.Deadline(deadline, clock);
+        var context = new RunGuardContext { NextStep = 1, CompletedSteps = 0, StartedAt = clock.GetUtcNow() };
+
+        guard.Evaluate(context).Action.ShouldBe(RunGuardAction.Continue, "time has not reached the deadline yet");
+
+        clock.Advance(TimeSpan.FromMinutes(10) - TimeSpan.FromTicks(1));
+        guard.Evaluate(context).Action.ShouldBe(RunGuardAction.Continue, "one tick before the deadline is still green");
+
+        clock.Advance(TimeSpan.FromTicks(1));
+        var verdict = guard.Evaluate(context);
+        verdict.Action.ShouldBe(RunGuardAction.Stop, "the guard fires exactly at the deadline");
+        verdict.Reason.ShouldBe(RunGuards.DeadlineExceeded);
+    }
+
+    [Fact(DisplayName = "Given a relative deadline on a FakeTimeProvider, when time advances from guard creation, then the guard stays green until the anchored deadline elapses")]
+    public void RelativeDeadlineAnchorsAtCreationAndTripsAfterAdvance()
+    {
+        var clock = new FakeTimeProvider();
+        var createdAt = clock.GetUtcNow();
+        var guard = RunGuards.Deadline(TimeSpan.FromMinutes(5), clock);
+        var context = new RunGuardContext { NextStep = 1, CompletedSteps = 0, StartedAt = createdAt };
+
+        clock.Advance(TimeSpan.FromMinutes(4));
+        guard.Evaluate(context).Action.ShouldBe(RunGuardAction.Continue, "relative deadline is measured from creation, not from evaluation");
+
+        clock.Advance(TimeSpan.FromMinutes(1));
+        var verdict = guard.Evaluate(context);
+        verdict.Action.ShouldBe(RunGuardAction.Stop, "creation + 5 minutes has elapsed");
+        verdict.Reason.ShouldBe(RunGuards.DeadlineExceeded);
+    }
+
+    [Fact(DisplayName = "Given a null time provider, when creating a deadline guard overload, then a domain ArgumentException names the parameter")]
+    public void NullTimeProviderThrows()
+    {
+        var absoluteEx = Should.Throw<ArgumentException>(() => RunGuards.Deadline(DateTimeOffset.UtcNow, null!));
+        absoluteEx.ParamName.ShouldBe("timeProvider");
+
+        var relativeEx = Should.Throw<ArgumentException>(() => RunGuards.Deadline(TimeSpan.FromMinutes(1), null!));
+        relativeEx.ParamName.ShouldBe("timeProvider");
+    }
+
+    [Fact(DisplayName = "Given a compiled graph whose guard reads a FakeTimeProvider, when time moves past the deadline between runs, then the next run parks Interrupted deterministically")]
+    public async Task EngineHonorsInjectedTimeProvider()
+    {
+        var clock = new FakeTimeProvider();
+        var checkpointer = new InMemoryCheckpointer();
+        var graph = new StateGraph()
+            .AddChannel("messages", ChannelKind.Append)
+            .AddNode("a", static (_, _) => Task.FromResult<NodeResult>(
+                NodeResult.Continue(new ChannelWrite("messages", "a"))))
+            .AddEdge(GraphConstants.Start, "a")
+            .AddEdge("a", GraphConstants.End)
+            .Compile(
+                checkpointer,
+                new CompileOptions
+                {
+                    RunGuards = [RunGuards.Deadline(clock.GetUtcNow().AddMinutes(1), clock)],
+                });
+
+        var first = await graph.InvokeAsync(
+            [],
+            new RunOptions { ThreadId = "guard-frozen", StreamMode = StreamMode.Values });
+        first.Kind.ShouldBe(StreamEventKind.End, "the injected clock has not reached the deadline");
+        var done = await graph.GetStateAsync("guard-frozen");
+        done!.Status.ShouldBe(GraphRunStatus.Done);
+
+        clock.Advance(TimeSpan.FromMinutes(2));
+
+        var second = await graph.InvokeAsync(
+            [],
+            new RunOptions { ThreadId = "guard-moved", StreamMode = StreamMode.Values });
+        second.Kind.ShouldBe(StreamEventKind.Interrupt, "the same guard instance now reads a past deadline");
+        var parked = await graph.GetStateAsync("guard-moved");
+        parked!.Status.ShouldBe(GraphRunStatus.Interrupted);
+        parked.StopReason.ShouldBe(RunStopReason.DeadlineExceeded);
+        parked.PendingInterrupts.ShouldBeEmpty();
+        parked.NextNodes.ShouldBe(["a"]);
     }
 }
