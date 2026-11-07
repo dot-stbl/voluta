@@ -56,6 +56,9 @@ public static class VolutaErrorCodes
     /// <summary>Continue requested for a thread that is not in Running status.</summary>
     public const string GraphInvalidContinue = "graph.invalid_continue";
 
+    /// <summary>Node retry policy invalid at compile time (max attempts &lt; 1).</summary>
+    public const string GraphInvalidRetryPolicy = "graph.invalid_retry_policy";
+
     /// <summary>Thread id has no checkpoint (update / continue / fork source miss).</summary>
     public const string GraphThreadNotFound = "graph.thread_not_found";
 
@@ -115,6 +118,7 @@ public static class VolutaErrorCodes
         GraphVersionMismatch,
         GraphInvalidCancel,
         GraphInvalidContinue,
+        GraphInvalidRetryPolicy,
         GraphThreadNotFound,
         GraphStepNotFound,
         ChannelConcurrentUpdate,

@@ -99,4 +99,37 @@ public sealed class CheckpointSnapshot
     ///     as <see cref="PendingInterrupts" />.
     /// </summary>
     public string? CancelReason { get; init; }
+
+    /// <summary>
+    ///     Tasks of the current step that completed (their writes are in
+    ///     <see cref="PendingWrites" />). Written by the engine's per-task progress puts;
+    ///     cleared at the step boundary. Additive wire field — empty default, same precedent
+    ///     as <see cref="PendingInterrupts" />.
+    /// </summary>
+    public IReadOnlyList<string> CompletedTaskIds { get; init; } = [];
+
+    /// <summary>
+    ///     In-progress retry attempt per task id (node retry policy); absent/empty = none.
+    ///     Crash resume reads the recorded attempt and continues at the next one.
+    ///     Additive wire field — empty default, same precedent as
+    ///     <see cref="PendingInterrupts" />.
+    /// </summary>
+    public IReadOnlyDictionary<string, int> TaskAttempts { get; init; } =
+        new Dictionary<string, int>(StringComparer.Ordinal);
+
+    /// <summary>
+    ///     Join barrier target → sources arrived in the current epoch (cleared when the
+    ///     join fires). Additive wire field — empty default, same precedent as
+    ///     <see cref="PendingInterrupts" />.
+    /// </summary>
+    public IReadOnlyDictionary<string, IReadOnlyList<string>> JoinArrivals { get; init; } =
+        new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+
+    /// <summary>
+    ///     Typed reason behind an <see cref="GraphRunStatus.Interrupted" /> snapshot written
+    ///     by a non-HITL pause (guard stop or static pause point); <see cref="Runtime.RunStopReason.None" />
+    ///     for regular HITL interrupts. Additive wire field — enum default, same precedent as
+    ///     <see cref="PendingInterrupts" />.
+    /// </summary>
+    public RunStopReason StopReason { get; init; } = RunStopReason.None;
 }

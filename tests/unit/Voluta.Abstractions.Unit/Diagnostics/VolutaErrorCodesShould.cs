@@ -39,6 +39,7 @@ public sealed class VolutaErrorCodesShould
     [InlineData(nameof(VolutaErrorCodes.GraphRunFailed), "graph.run_failed")]
     [InlineData(nameof(VolutaErrorCodes.GraphInvalidResume), "graph.invalid_resume")]
     [InlineData(nameof(VolutaErrorCodes.GraphInvalidContinue), "graph.invalid_continue")]
+    [InlineData(nameof(VolutaErrorCodes.GraphInvalidRetryPolicy), "graph.invalid_retry_policy")]
     [InlineData(nameof(VolutaErrorCodes.GraphVersionMismatch), "graph.version_mismatch")]
     [InlineData(nameof(VolutaErrorCodes.GraphInvalidCancel), "graph.invalid_cancel")]
     [InlineData(nameof(VolutaErrorCodes.GraphThreadNotFound), "graph.thread_not_found")]
