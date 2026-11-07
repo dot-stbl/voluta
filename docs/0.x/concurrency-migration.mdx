@@ -24,7 +24,8 @@ Checkpoint snapshots gain **optional additive fields**:
 - `stopReason` — typed reason behind a non-HITL pause (`StaticBefore`/`StaticAfter`,
   `BudgetExhausted`/`DeadlineExceeded`)
 - registered host types may be stamped as `{"$type","$value"}` when a checkpoint
-  type registry is attached (see the type registry concept page)
+  type registry is attached (see `CompileOptions.CheckpointTypes` and
+  `IRegistryAwareCheckpointer` in the API surface)
 
 All of them are optional on the wire: **old providers can read new snapshots**
 (the new fields are ignored), and **new providers can read old snapshots** (the
