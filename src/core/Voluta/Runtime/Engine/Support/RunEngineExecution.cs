@@ -132,7 +132,7 @@ internal static class RunEngineExecution
             ? new ReadyExecutionOutcome { Executions = executions, Progress = progress }
             : firstFault is OperationCanceledException
                 ? new ReadyExecutionOutcome { Cancelled = true, Exception = firstFault }
-                : new ReadyExecutionOutcome { Failure = AsFailure(firstFault) };
+                : new ReadyExecutionOutcome { Failure = RunEngineExecutionHelpers.AsFailure(firstFault) };
     }
 
     public static GraphException? TryApplyWrites(
@@ -162,6 +162,20 @@ internal static class RunEngineExecution
                 pending.TaskId,
                 new ChannelWrite(pending.ChannelName, pending.Value)))
             .ToArray();
+    }
+
+    /// <summary>
+    ///     Applies persisted pending writes (progress buffer of a crashed step's snapshot) to
+    ///     the restored store, throwing the wrapped <see cref="GraphException" /> on failure.
+    ///     Shared by resume and continue restore paths.
+    /// </summary>
+    public static void RestorePendingWrites(ChannelStore store, CheckpointSnapshot checkpoint)
+    {
+        var restoreError = TryApplyWrites(store, FromPendingWrites(checkpoint.PendingWrites));
+        if (restoreError is not null)
+        {
+            throw restoreError;
+        }
     }
 
     /// <summary>
@@ -266,14 +280,6 @@ internal static class RunEngineExecution
 
         return sends ?? [];
     }
-
-    private static GraphException AsFailure(Exception fault)
-    {
-        return fault as GraphException
-               ?? new GraphRunFailedException(
-                   $"Node execution failed: {fault.Message}",
-                   fault);
-    }
 }
 
 /// <summary>
@@ -284,6 +290,15 @@ internal static class RunEngineExecution
 /// </summary>
 file static class RunEngineExecutionHelpers
 {
+    /// <summary>First fault as-is when already a GraphException; wrapped otherwise.</summary>
+    public static GraphException AsFailure(Exception fault)
+    {
+        return fault as GraphException
+               ?? new GraphRunFailedException(
+                   $"Node execution failed: {fault.Message}",
+                   fault);
+    }
+
     public static async Task<NodeExecution> ExecuteOneAsync(
         GraphTopology topology,
         ReadyTask readyTask,

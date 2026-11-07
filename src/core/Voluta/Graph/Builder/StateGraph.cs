@@ -120,7 +120,7 @@ public sealed class StateGraph
     /// </exception>
     public StateGraph AddNode(string name, NodeHandler handler, NodeOptions options)
     {
-        RegisterNodeOptions(name, options);
+        StateGraphValidation.RegisterNodeOptions(nodeOptions, name, options);
         return AddNode(name, handler);
     }
 
@@ -156,7 +156,7 @@ public sealed class StateGraph
     public StateGraph AddNode<TNode>(string name, NodeOptions options)
         where TNode : class, IGraphNode
     {
-        RegisterNodeOptions(name, options);
+        StateGraphValidation.RegisterNodeOptions(nodeOptions, name, options);
         return AddNode<TNode>(name);
     }
 
@@ -185,7 +185,7 @@ public sealed class StateGraph
     /// </exception>
     public StateGraph AddNode(string name, IGraphNode node, NodeOptions options)
     {
-        RegisterNodeOptions(name, options);
+        StateGraphValidation.RegisterNodeOptions(nodeOptions, name, options);
         return AddNode(name, node);
     }
 
@@ -224,7 +224,7 @@ public sealed class StateGraph
     /// </exception>
     public StateGraph AddNode(string name, Func<IServiceProvider, IGraphNode> nodeFactory, NodeOptions options)
     {
-        RegisterNodeOptions(name, options);
+        StateGraphValidation.RegisterNodeOptions(nodeOptions, name, options);
         return AddNode(name, nodeFactory);
     }
 
@@ -382,28 +382,6 @@ public sealed class StateGraph
     }
 
     /// <summary>
-    ///     Validates and records per-node options (null-check + retry-policy compile check).
-    /// </summary>
-    private void RegisterNodeOptions(string name, NodeOptions options)
-    {
-        if (options is null)
-        {
-            throw new GraphCompileException(
-                VolutaErrorCodes.GraphInvalidNode,
-                $"Node '{name}' options must not be null.");
-        }
-
-        if (options.Retry is { MaxAttempts: < 1 })
-        {
-            throw new GraphCompileException(
-                VolutaErrorCodes.GraphInvalidRetryPolicy,
-                $"Node '{name}' retry policy requires at least one attempt (MaxAttempts={options.Retry.MaxAttempts}).");
-        }
-
-        nodeOptions[name] = options;
-    }
-
-    /// <summary>
     ///     Validates topology and returns an immutable compiled graph.
     /// </summary>
     /// <param name="checkpointer">Checkpoint store (typically <see cref="InMemoryCheckpointer" />).</param>
@@ -516,6 +494,31 @@ file static class StateGraphValidation
     public static bool IsSentinel(string name)
     {
         return name is GraphConstants.Start or GraphConstants.End;
+    }
+
+    /// <summary>
+    ///     Validates and records per-node options (null-check + retry-policy compile check).
+    /// </summary>
+    public static void RegisterNodeOptions(
+        Dictionary<string, NodeOptions> nodeOptions,
+        string name,
+        NodeOptions options)
+    {
+        if (options is null)
+        {
+            throw new GraphCompileException(
+                VolutaErrorCodes.GraphInvalidNode,
+                $"Node '{name}' options must not be null.");
+        }
+
+        if (options.Retry is { MaxAttempts: < 1 })
+        {
+            throw new GraphCompileException(
+                VolutaErrorCodes.GraphInvalidRetryPolicy,
+                $"Node '{name}' retry policy requires at least one attempt (MaxAttempts={options.Retry.MaxAttempts}).");
+        }
+
+        nodeOptions[name] = options;
     }
 
     /// <summary>

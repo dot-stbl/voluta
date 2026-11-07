@@ -167,13 +167,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
 
         // Per-task progress (v050): a superstep that crashed mid-flight recorded completed
         // tasks + their writes; apply the recorded writes so the resume step sees them.
-        var restoreError = RunEngineExecution.TryApplyWrites(
-            store,
-            RunEngineExecution.FromPendingWrites(checkpoint.PendingWrites));
-        if (restoreError is not null)
-        {
-            throw restoreError;
-        }
+        RunEngineExecution.RestorePendingWrites(store, checkpoint);
 
         if (command.Values is { Count: > 0 } values)
         {
@@ -322,13 +316,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
 
         // Per-task progress (v050): apply writes recorded for completed tasks of the
         // interrupted (crashed) step, then continue only with unfinished tasks.
-        var restoreError = RunEngineExecution.TryApplyWrites(
-            store,
-            RunEngineExecution.FromPendingWrites(checkpoint.PendingWrites));
-        if (restoreError is not null)
-        {
-            throw restoreError;
-        }
+        RunEngineExecution.RestorePendingWrites(store, checkpoint);
 
         var nextNodes = checkpoint.NextNodes;
         if (nextNodes.Count == 0 && checkpoint.PendingSends.Count == 0)
@@ -409,84 +397,6 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
     }
 
     /// <summary>
-    ///     Guard evaluation before superstep <paramref name="nextStep" /> (v050): first Stop
-    ///     wins; the reason string maps to a typed <see cref="RunStopReason" />
-    ///     (<c>deadline_exceeded</c> → DeadlineExceeded, everything else → BudgetExhausted —
-    ///     the typed enum stays closed). Null = proceed.
-    /// </summary>
-    private static RunStopReason? EvaluateGuards(
-        IReadOnlyList<IRunGuard> guards,
-        long nextStep,
-        DateTimeOffset startedAt)
-    {
-        if (guards.Count == 0)
-        {
-            return null;
-        }
-
-        var context = new RunGuardContext
-        {
-            NextStep = nextStep,
-            CompletedSteps = nextStep - 1,
-            StartedAt = startedAt,
-        };
-        foreach (var guard in guards)
-        {
-            var decision = guard.Evaluate(context);
-            if (decision.Action == RunGuardAction.Stop)
-            {
-                return string.Equals(decision.Reason, RunGuards.DeadlineExceeded, StringComparison.Ordinal)
-                    ? RunStopReason.DeadlineExceeded
-                    : RunStopReason.BudgetExhausted;
-            }
-        }
-
-        return null;
-    }
-
-    /// <summary>
-    ///     Parks the run with an <c>Interrupted</c> snapshot at <paramref name="step" />
-    ///     (unchanged — the step is not consumed): ready set in NextNodes, pending sends
-    ///     preserved, empty PendingInterrupts, typed StopReason. Serves static pauses
-    ///     (StaticBefore) and guard stops (Budget/Deadline) alike.
-    /// </summary>
-    private static async Task ParkPolicyStopAsync(
-        RunCheckpointWriter checkpointer,
-        RunOptions options,
-        ChannelStore store,
-        long step,
-        string? lastNode,
-        IReadOnlyList<ReadyTask> readyTasks,
-        IReadOnlyList<PendingSend> pendingSends,
-        IReadOnlyDictionary<string, IReadOnlyList<string>> joinArrivals,
-        RunStopReason reason,
-        CancellationToken cancellationToken)
-    {
-        await checkpointer.PutAsync(
-            RunEngineSnapshots.Build(
-                options.ThreadId,
-                step,
-                GraphRunStatus.Interrupted,
-                store,
-                lastNode,
-                RunEngineLoopHelpers.DistinctNodeNames(readyTasks),
-                pendingSends,
-                null,
-                pendingInterrupts: [],
-                joinArrivals: joinArrivals,
-                stopReason: reason,
-                identity: checkpointer.Identity),
-            cancellationToken);
-    }
-
-    private static string StopReasonPayload(RunStopReason reason)
-    {
-        return reason == RunStopReason.DeadlineExceeded
-            ? RunGuards.DeadlineExceeded
-            : RunGuards.BudgetExhausted;
-    }
-
-    /// <summary>
     ///     Continues a Running thread with a stream mode (builds default run options).
     /// </summary>
     public IAsyncEnumerable<StreamEvent> ContinueAsync(
@@ -523,75 +433,31 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
             StringComparer.Ordinal);
 
         // Superstep entry order (v050): guards → static-before → limit → execute.
-        var guardStop = EvaluateGuards(topology.RunGuards, checkpoint.Step + 1, startedAt);
-        if (guardStop is { } guardReason)
+        var park = await RunEngineLoopHelpers.TryEnterSuperstepAsync(
+            topology,
+            checkpointer,
+            options,
+            store,
+            checkpoint.Step,
+            checkpoint.LastNode,
+            readyTasks,
+            [],
+            arrivals,
+            startedAt,
+            checkStaticBefore: true,
+            cancellationToken);
+        if (park is not null)
         {
-            await ParkPolicyStopAsync(
-                checkpointer,
-                options,
-                store,
-                checkpoint.Step,
-                checkpoint.LastNode,
-                readyTasks,
-                [],
-                arrivals,
-                guardReason,
-                cancellationToken);
-            yield return RunEngineStreaming.Terminal(
-                options.StreamMode,
-                StreamEventKind.Interrupt,
-                checkpoint.Step,
-                store,
-                payload: StopReasonPayload(guardReason));
-            yield break;
-        }
+            yield return park.Event;
+            if (park.OutOfSteps is { } outOfSteps)
+            {
+                throw outOfSteps;
+            }
 
-        if (StaticInterrupts.ShouldPauseBefore(topology, readyTasks))
-        {
-            await ParkPolicyStopAsync(
-                checkpointer,
-                options,
-                store,
-                checkpoint.Step,
-                checkpoint.LastNode,
-                readyTasks,
-                [],
-                arrivals,
-                RunStopReason.StaticBefore,
-                cancellationToken);
-            yield return RunEngineStreaming.Terminal(
-                options.StreamMode,
-                StreamEventKind.Interrupt,
-                checkpoint.Step,
-                store);
             yield break;
         }
 
         var step = checkpoint.Step + 1;
-        if (step > topology.RecursionLimit)
-        {
-            var outOfSteps = new GraphOutOfStepsException(topology.RecursionLimit, step);
-            await checkpointer.PutAsync(
-                RunEngineSnapshots.Build(
-                    options.ThreadId,
-                    step,
-                    GraphRunStatus.Failed,
-                    store,
-                    checkpoint.LastNode,
-                    RunEngineLoopHelpers.DistinctNodeNames(readyTasks),
-                    [],
-                    null,
-                    joinArrivals: arrivals,
-                    identity: checkpointer.Identity),
-                cancellationToken);
-            yield return RunEngineStreaming.Terminal(
-                options.StreamMode,
-                StreamEventKind.Failed,
-                step,
-                store,
-                outOfSteps);
-            throw outOfSteps;
-        }
 
         SuperstepCommit? commit = null;
         await foreach (var item in RunEngineLoopHelpers.RunSuperstepStreamingAsync(
@@ -749,79 +615,32 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
             }
 
             // Superstep entry order (v050): guards → static-before → limit → execute.
-            var guardStop = EvaluateGuards(topology.RunGuards, step + 1, startedAt);
-            if (guardStop is { } guardReason)
+            var park = await RunEngineLoopHelpers.TryEnterSuperstepAsync(
+                topology,
+                checkpointer,
+                options,
+                store,
+                step,
+                lastNode,
+                readyTasks,
+                RunEngineExecution.StepSends(readyTasks),
+                arrivals,
+                startedAt,
+                checkStaticBefore: !skipStaticBefore,
+                cancellationToken);
+            if (park is not null)
             {
-                await ParkPolicyStopAsync(
-                    checkpointer,
-                    options,
-                    store,
-                    step,
-                    lastNode,
-                    readyTasks,
-                    RunEngineExecution.StepSends(readyTasks),
-                    arrivals,
-                    guardReason,
-                    cancellationToken);
-                yield return RunEngineStreaming.Terminal(
-                    streamMode,
-                    StreamEventKind.Interrupt,
-                    step,
-                    store,
-                    payload: StopReasonPayload(guardReason));
-                yield break;
-            }
+                yield return park.Event;
+                if (park.OutOfSteps is { } outOfSteps)
+                {
+                    throw outOfSteps;
+                }
 
-            if (!skipStaticBefore && StaticInterrupts.ShouldPauseBefore(topology, readyTasks))
-            {
-                await ParkPolicyStopAsync(
-                    checkpointer,
-                    options,
-                    store,
-                    step,
-                    lastNode,
-                    readyTasks,
-                    RunEngineExecution.StepSends(readyTasks),
-                    arrivals,
-                    RunStopReason.StaticBefore,
-                    cancellationToken);
-                yield return RunEngineStreaming.Terminal(
-                    streamMode,
-                    StreamEventKind.Interrupt,
-                    step,
-                    store);
                 yield break;
             }
 
             skipStaticBefore = false;
-
             step++;
-            if (step > topology.RecursionLimit)
-            {
-                var outOfSteps = new GraphOutOfStepsException(topology.RecursionLimit, step);
-                var failedNodeNames = RunEngineLoopHelpers.DistinctNodeNames(readyTasks);
-                await checkpointer.PutAsync(
-                    RunEngineSnapshots.Build(
-                        options.ThreadId,
-                        step,
-                        GraphRunStatus.Failed,
-                        store,
-                        lastNode,
-                        failedNodeNames,
-                        [],
-                        null,
-                        joinArrivals: arrivals,
-                        identity: checkpointer.Identity),
-                    cancellationToken);
-
-                yield return RunEngineStreaming.Terminal(
-                    streamMode,
-                    StreamEventKind.Failed,
-                    step,
-                    store,
-                    outOfSteps);
-                throw outOfSteps;
-            }
 
             SuperstepCommit? commit = null;
             await foreach (var item in RunEngineLoopHelpers.RunSuperstepStreamingAsync(
@@ -931,79 +750,32 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
 
             // Superstep entry order (v050, deliberate): guards → static-before → limit →
             // execute. The parked snapshot keeps the current step (the step is not consumed).
-            var guardStop = EvaluateGuards(topology.RunGuards, step + 1, startedAt);
-            if (guardStop is { } guardReason)
+            var park = await RunEngineLoopHelpers.TryEnterSuperstepAsync(
+                topology,
+                checkpointer,
+                options,
+                store,
+                step,
+                lastNode,
+                readyTasks,
+                RunEngineExecution.StepSends(readyTasks),
+                arrivals,
+                startedAt,
+                checkStaticBefore: !skipStaticBefore,
+                cancellationToken);
+            if (park is not null)
             {
-                await ParkPolicyStopAsync(
-                    checkpointer,
-                    options,
-                    store,
-                    step,
-                    lastNode,
-                    readyTasks,
-                    RunEngineExecution.StepSends(readyTasks),
-                    arrivals,
-                    guardReason,
-                    cancellationToken);
-                yield return RunEngineStreaming.Terminal(
-                    options.StreamMode,
-                    StreamEventKind.Interrupt,
-                    step,
-                    store,
-                    payload: StopReasonPayload(guardReason));
-                yield break;
-            }
+                yield return park.Event;
+                if (park.OutOfSteps is { } outOfSteps)
+                {
+                    throw outOfSteps;
+                }
 
-            if (!skipStaticBefore && StaticInterrupts.ShouldPauseBefore(topology, readyTasks))
-            {
-                await ParkPolicyStopAsync(
-                    checkpointer,
-                    options,
-                    store,
-                    step,
-                    lastNode,
-                    readyTasks,
-                    RunEngineExecution.StepSends(readyTasks),
-                    arrivals,
-                    RunStopReason.StaticBefore,
-                    cancellationToken);
-                yield return RunEngineStreaming.Terminal(
-                    options.StreamMode,
-                    StreamEventKind.Interrupt,
-                    step,
-                    store);
                 yield break;
             }
 
             skipStaticBefore = false;
-
             step++;
-            if (RunEngineLoopHelpers.IsOutOfSteps(step, topology.RecursionLimit))
-            {
-                var outOfSteps = new GraphOutOfStepsException(topology.RecursionLimit, step);
-                var failedNodeNames = RunEngineLoopHelpers.DistinctNodeNames(readyTasks);
-                await checkpointer.PutAsync(
-                    RunEngineSnapshots.Build(
-                        options.ThreadId,
-                        step,
-                        GraphRunStatus.Failed,
-                        store,
-                        lastNode,
-                        failedNodeNames,
-                        [],
-                        null,
-                        joinArrivals: arrivals,
-                        identity: checkpointer.Identity),
-                    cancellationToken);
-
-                yield return RunEngineStreaming.Terminal(
-                    options.StreamMode,
-                    StreamEventKind.Failed,
-                    step,
-                    store,
-                    outOfSteps);
-                throw outOfSteps;
-            }
 
             // readyTasks from ToPullTasks are already sorted; re-sort only when sends merge in.
             var orderedReady = readyTasks;
@@ -1090,6 +862,12 @@ file sealed class SuperstepStreamItem
 }
 
 /// <summary>
+///     Park outcome of the superstep entry prelude: the terminal event to replay and, on
+///     the recursion cap, the failure to rethrow after the event.
+/// </summary>
+file sealed record SuperstepEntryPark(StreamEvent Event, GraphOutOfStepsException? OutOfSteps = null);
+
+/// <summary>
 ///     Hot-path helpers for ready-set node name extraction and superstep body (file-static).
 /// </summary>
 file static class RunEngineLoopHelpers
@@ -1101,6 +879,171 @@ file static class RunEngineLoopHelpers
     public static bool IsOutOfSteps(long step, int limit)
     {
         return limit != Voluta.Graph.Options.RecursionLimit.Unlimited && step > limit;
+    }
+
+    /// <summary>
+    ///     Superstep entry prelude (v050): guards → static-before → recursion limit, checked in
+    ///     exactly this order (the caller owns the cancellation check and the empty-ready Done
+    ///     check). On a stop it parks the run — <c>Interrupted</c> snapshot at the current step
+    ///     (the step is not consumed) for guard/static stops, <c>Failed</c> at the incremented
+    ///     step on the cap — and returns the terminal event to replay plus the failure to
+    ///     throw; null means execution proceeds at <paramref name="step" /> + 1.
+    /// </summary>
+    public static async Task<SuperstepEntryPark?> TryEnterSuperstepAsync(
+        GraphTopology topology,
+        RunCheckpointWriter checkpointer,
+        RunOptions options,
+        ChannelStore store,
+        long step,
+        string? lastNode,
+        IReadOnlyList<ReadyTask> readyTasks,
+        IReadOnlyList<PendingSend> pendingSends,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> joinArrivals,
+        DateTimeOffset startedAt,
+        bool checkStaticBefore,
+        CancellationToken cancellationToken)
+    {
+        var guardStop = EvaluateGuards(topology.RunGuards, step + 1, startedAt);
+        if (guardStop is { } guardReason)
+        {
+            await ParkPolicyStopAsync(
+                checkpointer,
+                options,
+                store,
+                step,
+                lastNode,
+                readyTasks,
+                pendingSends,
+                joinArrivals,
+                guardReason,
+                cancellationToken);
+            return new SuperstepEntryPark(
+                RunEngineStreaming.Terminal(
+                    options.StreamMode,
+                    StreamEventKind.Interrupt,
+                    step,
+                    store,
+                    payload: StopReasonPayload(guardReason)));
+        }
+
+        if (checkStaticBefore && StaticInterrupts.ShouldPauseBefore(topology, readyTasks))
+        {
+            await ParkPolicyStopAsync(
+                checkpointer,
+                options,
+                store,
+                step,
+                lastNode,
+                readyTasks,
+                pendingSends,
+                joinArrivals,
+                RunStopReason.StaticBefore,
+                cancellationToken);
+            return new SuperstepEntryPark(
+                RunEngineStreaming.Terminal(options.StreamMode, StreamEventKind.Interrupt, step, store));
+        }
+
+        var nextStep = step + 1;
+        if (IsOutOfSteps(nextStep, topology.RecursionLimit))
+        {
+            var outOfSteps = new GraphOutOfStepsException(topology.RecursionLimit, nextStep);
+            await checkpointer.PutAsync(
+                RunEngineSnapshots.Build(
+                    options.ThreadId,
+                    nextStep,
+                    GraphRunStatus.Failed,
+                    store,
+                    lastNode,
+                    DistinctNodeNames(readyTasks),
+                    [],
+                    null,
+                    joinArrivals: joinArrivals,
+                    identity: checkpointer.Identity),
+                cancellationToken);
+            return new SuperstepEntryPark(
+                RunEngineStreaming.Terminal(options.StreamMode, StreamEventKind.Failed, nextStep, store, outOfSteps),
+                outOfSteps);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    ///     Guard evaluation before superstep <paramref name="nextStep" /> (v050): first Stop
+    ///     wins; the reason string maps to a typed <see cref="RunStopReason" />
+    ///     (<c>deadline_exceeded</c> → DeadlineExceeded, everything else → BudgetExhausted —
+    ///     the typed enum stays closed). Null = proceed.
+    /// </summary>
+    private static RunStopReason? EvaluateGuards(
+        IReadOnlyList<IRunGuard> guards,
+        long nextStep,
+        DateTimeOffset startedAt)
+    {
+        if (guards.Count == 0)
+        {
+            return null;
+        }
+
+        var context = new RunGuardContext
+        {
+            NextStep = nextStep,
+            CompletedSteps = nextStep - 1,
+            StartedAt = startedAt,
+        };
+        foreach (var guard in guards)
+        {
+            var decision = guard.Evaluate(context);
+            if (decision.Action == RunGuardAction.Stop)
+            {
+                return string.Equals(decision.Reason, RunGuards.DeadlineExceeded, StringComparison.Ordinal)
+                    ? RunStopReason.DeadlineExceeded
+                    : RunStopReason.BudgetExhausted;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    ///     Parks the run with an <c>Interrupted</c> snapshot at <paramref name="step" />
+    ///     (unchanged — the step is not consumed): ready set in NextNodes, pending sends
+    ///     preserved, empty PendingInterrupts, typed StopReason. Serves static pauses
+    ///     (StaticBefore) and guard stops (Budget/Deadline) alike.
+    /// </summary>
+    private static async Task ParkPolicyStopAsync(
+        RunCheckpointWriter checkpointer,
+        RunOptions options,
+        ChannelStore store,
+        long step,
+        string? lastNode,
+        IReadOnlyList<ReadyTask> readyTasks,
+        IReadOnlyList<PendingSend> pendingSends,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> joinArrivals,
+        RunStopReason reason,
+        CancellationToken cancellationToken)
+    {
+        await checkpointer.PutAsync(
+            RunEngineSnapshots.Build(
+                options.ThreadId,
+                step,
+                GraphRunStatus.Interrupted,
+                store,
+                lastNode,
+                DistinctNodeNames(readyTasks),
+                pendingSends,
+                null,
+                pendingInterrupts: [],
+                joinArrivals: joinArrivals,
+                stopReason: reason,
+                identity: checkpointer.Identity),
+            cancellationToken);
+    }
+
+    private static string StopReasonPayload(RunStopReason reason)
+    {
+        return reason == RunStopReason.DeadlineExceeded
+            ? RunGuards.DeadlineExceeded
+            : RunGuards.BudgetExhausted;
     }
 
     public static async IAsyncEnumerable<SuperstepStreamItem> RunSuperstepStreamingAsync(
