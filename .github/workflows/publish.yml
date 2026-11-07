@@ -168,12 +168,12 @@ jobs:
           pack_out="${RUNNER_TEMP}/packages"
           dotnet nuget push "$pack_out/*.nupkg" \
             --source https://api.nuget.org/v3/index.json \
-            --api-key "${{ steps.nuget-login.outputs.nuget-api-key }}" \
+            --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" \
             --skip-duplicate
           if ls "$pack_out"/*.snupkg >/dev/null 2>&1; then
             dotnet nuget push "$pack_out/*.snupkg" \
               --source https://api.nuget.org/v3/index.json \
-              --api-key "${{ steps.nuget-login.outputs.nuget-api-key }}" \
+              --api-key "${{ steps.nuget-login.outputs.NUGET_API_KEY }}" \
               --skip-duplicate
           fi
 
