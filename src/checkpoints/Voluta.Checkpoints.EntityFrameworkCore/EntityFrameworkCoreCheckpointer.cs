@@ -92,7 +92,7 @@ public sealed class EntityFrameworkCoreCheckpointer<TContext> : ICheckpointer, I
         CancellationToken cancellationToken)
     {
         // Validate wire v1 allow-list before EF conversion so CheckpointStoreException is not wrapped.
-        _ = EfCheckpointDocument.FromSnapshot(snapshot, TypeRegistry);
+        EfCheckpointDocument.FromSnapshot(snapshot, TypeRegistry);
         var guarded = expectedParentStep is not null;
 
         if (unitOfWork is not null && unitOfWork.TryGetResource<TContext>(out var hostDb))

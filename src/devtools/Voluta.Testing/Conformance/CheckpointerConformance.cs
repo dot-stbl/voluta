@@ -534,7 +534,7 @@ public static class CheckpointerConformance
     }
 
     /// <summary>Runs one racing guarded put, capturing the conflict outcome instead of throwing.</summary>
-    private static async Task<(bool Success, CheckpointStoreException? Conflict)> RacePutAsync(
+    private static async Task<GuardedPutOutcome> RacePutAsync(
         ICheckpointer checkpointer,
         CheckpointSnapshot snapshot,
         CancellationToken cancellationToken)
@@ -546,13 +546,16 @@ public static class CheckpointerConformance
                 expectedParentStep: snapshot.Step - 1,
                 unitOfWork: null,
                 cancellationToken: cancellationToken);
-            return (true, null);
+            return new GuardedPutOutcome(true, null);
         }
         catch (CheckpointStoreException conflict)
         {
-            return (false, conflict);
+            return new GuardedPutOutcome(false, conflict);
         }
     }
+
+    /// <summary>Outcome of one racing guarded put: success flag or the captured conflict.</summary>
+    private sealed record GuardedPutOutcome(bool Success, CheckpointStoreException? Conflict);
 
     /// <summary>
     ///     Runs all mandatory conformance scenarios against <paramref name="checkpointer" />.

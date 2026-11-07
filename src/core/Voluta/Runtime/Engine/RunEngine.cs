@@ -1430,10 +1430,8 @@ file static class RunEngineLoopHelpers
             // Merge pull (already sorted) with sends; sort once by node then task id.
             var merged = new List<ReadyTask>(nextPull.Count + pendingSends.Count);
             merged.AddRange(nextPull);
-            foreach (var send in pendingSends)
-            {
-                merged.Add(new ReadyTask(send.NodeName, send.TaskId, send.Payload));
-            }
+            merged.AddRange(pendingSends.Select(
+                static send => new ReadyTask(send.NodeName, send.TaskId, send.Payload)));
 
             merged.Sort(static (left, right) =>
             {
@@ -1755,12 +1753,9 @@ file static class RunEngineLoopHelpers
             return [];
         }
 
-        var tasks = new List<ReadyTask>(pendingInterrupts.Count);
-        foreach (var pending in pendingInterrupts)
-        {
-            tasks.Add(new ReadyTask(pending.NodeName, pending.TaskId, pending.TaskPayload));
-        }
-
+        var tasks = pendingInterrupts
+            .Select(static pending => new ReadyTask(pending.NodeName, pending.TaskId, pending.TaskPayload))
+            .ToList();
         tasks.Sort(static (left, right) =>
         {
             var nodeCompare = string.CompareOrdinal(left.NodeName, right.NodeName);

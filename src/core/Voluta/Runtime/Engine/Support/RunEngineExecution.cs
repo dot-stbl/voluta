@@ -157,21 +157,11 @@ internal static class RunEngineExecution
     public static IReadOnlyList<TaskChannelWrite> FromPendingWrites(
         IReadOnlyList<PendingWrite> pendingWrites)
     {
-        if (pendingWrites.Count == 0)
-        {
-            return [];
-        }
-
-        var writes = new List<TaskChannelWrite>(pendingWrites.Count);
-        foreach (var pending in pendingWrites)
-        {
-            writes.Add(
-                new TaskChannelWrite(
-                    pending.TaskId,
-                    new ChannelWrite(pending.ChannelName, pending.Value)));
-        }
-
-        return writes;
+        return pendingWrites
+            .Select(static pending => new TaskChannelWrite(
+                pending.TaskId,
+                new ChannelWrite(pending.ChannelName, pending.Value)))
+            .ToArray();
     }
 
     /// <summary>

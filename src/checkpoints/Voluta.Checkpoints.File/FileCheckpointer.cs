@@ -182,8 +182,7 @@ public sealed class FileCheckpointer : ICheckpointer, IThreadDiscovery, IRegistr
         lock (gate)
         {
             WriteSnapshotLocked(snapshot);
-            var head = TryReadHead(snapshot.ThreadId);
-            if (head is { } marker && marker.Step < snapshot.Step)
+            if (TryReadHead(snapshot.ThreadId) is { } marker && marker.Step < snapshot.Step)
             {
                 // Keep the marker fresh for guarded puts; never regress it, never create one
                 // on legacy threads (their first guarded put migrates from the documents).
@@ -282,10 +281,9 @@ public sealed class FileCheckpointer : ICheckpointer, IThreadDiscovery, IRegistr
                 return Task.FromResult<CheckpointSnapshot?>(null);
             }
 
-            var latest = Directory.EnumerateFiles(threadDir, "*.json")
-                .OrderByDescending(static path => path, StringComparer.Ordinal)
-                .FirstOrDefault();
-            if (latest is null)
+            if (Directory.EnumerateFiles(threadDir, "*.json")
+                    .OrderByDescending(static path => path, StringComparer.Ordinal)
+                    .FirstOrDefault() is not { } latest)
             {
                 return Task.FromResult<CheckpointSnapshot?>(null);
             }

@@ -115,7 +115,9 @@ public sealed class StateGraph
     /// <param name="handler">Async node body.</param>
     /// <param name="options">Node options (retry policy); must not be null.</param>
     /// <returns>This builder for chaining.</returns>
-    /// <exception cref="ArgumentNullException"><paramref name="options" /> is null.</exception>
+    /// <exception cref="GraphCompileException">
+    ///     <paramref name="options" /> is null (<c>graph.invalid_node</c>).
+    /// </exception>
     public StateGraph AddNode(string name, NodeHandler handler, NodeOptions options)
     {
         RegisterNodeOptions(name, options);
@@ -148,7 +150,9 @@ public sealed class StateGraph
     /// <param name="name">Node name (not START/END).</param>
     /// <param name="options">Node options (retry policy); must not be null.</param>
     /// <returns>This builder for chaining.</returns>
-    /// <exception cref="ArgumentNullException"><paramref name="options" /> is null.</exception>
+    /// <exception cref="GraphCompileException">
+    ///     <paramref name="options" /> is null (<c>graph.invalid_node</c>).
+    /// </exception>
     public StateGraph AddNode<TNode>(string name, NodeOptions options)
         where TNode : class, IGraphNode
     {
@@ -176,7 +180,9 @@ public sealed class StateGraph
     /// <param name="node">Node implementation.</param>
     /// <param name="options">Node options (retry policy); must not be null.</param>
     /// <returns>This builder for chaining.</returns>
-    /// <exception cref="ArgumentNullException"><paramref name="options" /> is null.</exception>
+    /// <exception cref="GraphCompileException">
+    ///     <paramref name="options" /> is null (<c>graph.invalid_node</c>).
+    /// </exception>
     public StateGraph AddNode(string name, IGraphNode node, NodeOptions options)
     {
         RegisterNodeOptions(name, options);
@@ -213,7 +219,9 @@ public sealed class StateGraph
     /// <param name="nodeFactory">Factory receiving <see cref="GraphContext.Services" />.</param>
     /// <param name="options">Node options (retry policy); must not be null.</param>
     /// <returns>This builder for chaining.</returns>
-    /// <exception cref="ArgumentNullException"><paramref name="options" /> is null.</exception>
+    /// <exception cref="GraphCompileException">
+    ///     <paramref name="options" /> is null (<c>graph.invalid_node</c>).
+    /// </exception>
     public StateGraph AddNode(string name, Func<IServiceProvider, IGraphNode> nodeFactory, NodeOptions options)
     {
         RegisterNodeOptions(name, options);
@@ -264,8 +272,7 @@ public sealed class StateGraph
     /// </exception>
     public StateGraph AddEdge(string[] sources, string target)
     {
-        ArgumentNullException.ThrowIfNull(sources);
-        if (sources.Length == 0)
+        if (sources is null || sources.Length == 0)
         {
             throw new GraphCompileException(
                 VolutaErrorCodes.GraphInvalidEdge,
@@ -379,7 +386,13 @@ public sealed class StateGraph
     /// </summary>
     private void RegisterNodeOptions(string name, NodeOptions options)
     {
-        ArgumentNullException.ThrowIfNull(options);
+        if (options is null)
+        {
+            throw new GraphCompileException(
+                VolutaErrorCodes.GraphInvalidNode,
+                $"Node '{name}' options must not be null.");
+        }
+
         if (options.Retry is { MaxAttempts: < 1 })
         {
             throw new GraphCompileException(

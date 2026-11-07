@@ -227,18 +227,20 @@ public sealed class NodeRetryShould
         done!.Status.ShouldBe(GraphRunStatus.Done);
     }
 
-    [Fact(DisplayName = "Given AddNode options null, when called, then ArgumentNullException and node not registered")]
+    [Fact(DisplayName = "Given AddNode options null, when called, then GraphCompileException and node not registered")]
     public void RejectNullOptions()
     {
         var builder = new StateGraph().AddNode(
             "a",
             static (_, _) => Task.FromResult<NodeResult>(NodeResult.Continue()));
 
-        Should.Throw<ArgumentNullException>(
+        var exception = Should.Throw<GraphCompileException>(
             () => builder.AddNode(
                 "a",
                 static (_, _) => Task.FromResult<NodeResult>(NodeResult.Continue()),
                 null!));
+
+        exception.Code.ShouldBe(VolutaErrorCodes.GraphInvalidNode);
     }
 
     [Fact(DisplayName = "Given invalid node name with options, when AddNode, then node validation still applies")]

@@ -44,14 +44,12 @@ public sealed class CompiledGraph
     /// </summary>
     public GraphDescription Describe()
     {
-        var staticEdges = new List<GraphEdgeDescription>();
-        foreach (var (source, targets) in topology.StaticEdges.OrderBy(static pair => pair.Key, StringComparer.Ordinal))
-        {
-            foreach (var target in targets)
-            {
-                staticEdges.Add(new GraphEdgeDescription { Source = source, Target = target });
-            }
-        }
+        var staticEdges = topology.StaticEdges
+            .OrderBy(static pair => pair.Key, StringComparer.Ordinal)
+            .SelectMany(
+                static pair => pair.Value,
+                static (pair, target) => new GraphEdgeDescription { Source = pair.Key, Target = target })
+            .ToArray();
 
         return new GraphDescription
         {
@@ -236,18 +234,9 @@ public sealed class CompiledGraph
         }
 
         var list = await checkpointer.ListAsync(threadId, cancellationToken);
-        if (list.Count == 0)
-        {
-            return [];
-        }
-
-        var result = new List<ThreadSnapshot>(list.Count);
-        foreach (var snapshot in list)
-        {
-            result.Add(ThreadSnapshotMapping.FromSnapshot(snapshot));
-        }
-
-        return result;
+        return list
+            .Select(static snapshot => ThreadSnapshotMapping.FromSnapshot(snapshot))
+            .ToArray();
     }
 
     /// <summary>

@@ -75,12 +75,12 @@ public sealed class CheckpointTypeRegistryShould
         Should.Throw<ArgumentException>(() => registry.Register<Order>(typeId));
     }
 
-    [Fact(DisplayName = "Given null arguments, when registered, then ArgumentNullException")]
+    [Fact(DisplayName = "Given null arguments, when registered, then ArgumentException")]
     public void RejectNullArguments()
     {
         var registry = new CheckpointTypeRegistry();
 
-        Should.Throw<ArgumentNullException>(() => registry.Register(null!, "host:x"));
-        Should.Throw<ArgumentNullException>(() => registry.Register<Order>(null!));
+        Should.Throw<ArgumentException>(() => registry.Register(null!, "host:x"));
+        Should.Throw<ArgumentException>(() => registry.Register<Order>(null!));
     }
 }

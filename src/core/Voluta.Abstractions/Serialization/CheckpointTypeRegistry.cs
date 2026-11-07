@@ -48,15 +48,22 @@ public sealed class CheckpointTypeRegistry
     /// <param name="runtimeType">Runtime value type.</param>
     /// <param name="typeId">Stable wire type id (non-empty, &lt;= 128 chars).</param>
     /// <returns>This registry for chaining.</returns>
-    /// <exception cref="System.ArgumentNullException">Null type or id.</exception>
     /// <exception cref="System.ArgumentException">
-    ///     Empty/oversized id; id already registered with a different CLR type; type already
-    ///     registered with a different id.
+    ///     Null type or id; empty/oversized id; id already registered with a different CLR
+    ///     type; type already registered with a different id.
     /// </exception>
     public CheckpointTypeRegistry Register(Type runtimeType, string typeId)
     {
-        ArgumentNullException.ThrowIfNull(runtimeType);
-        ArgumentNullException.ThrowIfNull(typeId);
+        if (runtimeType is null)
+        {
+            throw new ArgumentException("Checkpoint type must be non-null.", nameof(runtimeType));
+        }
+
+        if (typeId is null)
+        {
+            throw new ArgumentException("Checkpoint type id must be non-null.", nameof(typeId));
+        }
+
         if (typeId.Length is 0 or > 128)
         {
             throw new ArgumentException(
@@ -94,8 +101,9 @@ public sealed class CheckpointTypeRegistry
     /// <returns><see langword="true" /> when the type is registered.</returns>
     public bool TryGetTypeId(Type runtimeType, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out string? typeId)
     {
-        ArgumentNullException.ThrowIfNull(runtimeType);
-        return byRuntimeType.TryGetValue(runtimeType, out typeId);
+        return runtimeType is null
+            ? throw new ArgumentException("Runtime type must be non-null.", nameof(runtimeType))
+            : byRuntimeType.TryGetValue(runtimeType, out typeId);
     }
 
     /// <summary>
@@ -106,7 +114,8 @@ public sealed class CheckpointTypeRegistry
     /// <returns><see langword="true" /> when the id is registered.</returns>
     public bool TryResolveType(string typeId, [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out Type? type)
     {
-        ArgumentNullException.ThrowIfNull(typeId);
-        return byTypeId.TryGetValue(typeId, out type);
+        return typeId is null
+            ? throw new ArgumentException("Type id must be non-null.", nameof(typeId))
+            : byTypeId.TryGetValue(typeId, out type);
     }
 }

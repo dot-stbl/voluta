@@ -105,26 +105,21 @@ internal sealed class SuperstepProgress(
     ///     Current buffer contents for snapshot building after the drain concluded
     ///     (single-threaded at that point — the interrupt path reads without the gate).
     /// </summary>
-    public (IReadOnlyList<PendingWrite> Writes, IReadOnlyList<string> Completed, IReadOnlyDictionary<string, int> Attempts) Current()
+    public SuperstepProgressBuffer Current()
     {
         lock (mutex)
         {
-            var writes = new List<PendingWrite>();
-            foreach (var (taskId, taskWrites) in writesByTask)
-            {
-                foreach (var write in taskWrites)
-                {
-                    writes.Add(
-                        new PendingWrite
-                        {
-                            TaskId = taskId,
-                            ChannelName = write.Write.ChannelName,
-                            Value = write.Write.Value,
-                        });
-                }
-            }
-
-            return (writes, [.. completedTaskIds], new Dictionary<string, int>(attempts, StringComparer.Ordinal));
+            return new SuperstepProgressBuffer(
+                [.. writesByTask.SelectMany(
+                    static pair => pair.Value,
+                    static (pair, write) => new PendingWrite
+                    {
+                        TaskId = pair.Key,
+                        ChannelName = write.Write.ChannelName,
+                        Value = write.Write.Value,
+                    })],
+                [.. completedTaskIds],
+                new Dictionary<string, int>(attempts, StringComparer.Ordinal));
         }
     }
 
@@ -169,3 +164,12 @@ internal sealed class SuperstepProgress(
             cancellationToken);
     }
 }
+
+/// <summary>
+///     Buffer contents exposed by <see cref="SuperstepProgress.Current" />: buffered pending
+///     writes, completed task ids, and task attempt counters of the current step.
+/// </summary>
+internal sealed record SuperstepProgressBuffer(
+    IReadOnlyList<PendingWrite> Writes,
+    IReadOnlyList<string> Completed,
+    IReadOnlyDictionary<string, int> Attempts);

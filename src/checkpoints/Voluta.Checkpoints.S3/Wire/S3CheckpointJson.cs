@@ -188,8 +188,8 @@ internal static class S3CheckpointJson
             return false;
         }
 
-        var properties = json.EnumerateObject().ToList();
-        return properties.Count == 2
+        var properties = json.EnumerateObject().ToArray();
+        return properties.Length == 2
             && properties.Any(static property => property.Name == TypeKey)
             && properties.Any(static property => property.Name == ValueKey)
             && (typeId = properties.First(static property => property.Name == TypeKey).Value).ValueKind != JsonValueKind.Undefined
