@@ -1,0 +1,100 @@
+---
+title: Concurrency migration (0.4 → 0.5)
+description: What hosts must do for guarded checkpoint writes — the EF ConcurrencyToken column, checkpoint.conflict recovery, and why there is no opt-in flag.
+product: voluta
+version: "0.x"
+sidebar:
+  label: Concurrency migration
+  order: 90
+  group: Guides
+  badge: "0.5"
+---
+
+0.5.0 makes guarded checkpoint writes the behavior of the runtime, and adds
+wire fields to checkpoint snapshots. This page lists what a host must do when
+upgrading from 0.4.0, what a conflict looks like, and how to recover.
+
+## What changed on the wire
+
+Checkpoint snapshots gain **optional additive fields**:
+
+- `completedTaskIds` — tasks of the current step that completed (per-task writes)
+- `taskAttempts` — in-progress retry attempt per task id (node retry policy)
+- `joinArrivals` — join barrier arrivals in the current epoch (wait-for-all joins)
+- `stopReason` — typed reason behind a non-HITL pause (`StaticBefore`/`StaticAfter`,
+  `BudgetExhausted`/`DeadlineExceeded`)
+- registered host types may be stamped as `{"$type","$value"}` when a checkpoint
+  type registry is attached (see the type registry concept page)
+
+All of them are optional on the wire: **old providers can read new snapshots**
+(the new fields are ignored), and **new providers can read old snapshots** (the
+new fields restore empty). The wire format version stays `1`. Rollback to 0.4.0
+packages needs no data migration — 0.4.0 readers ignore what they do not know.
+
+## EF hosts: one migration for the `ConcurrencyToken` column
+
+The EF checkpointer protects same-step rewrites with an application-managed
+concurrency token:
+
+- the column is `CheckpointRecord.ConcurrencyToken` (`long`) on
+  `voluta_checkpoints` rows;
+- the model configures it with `.IsConcurrencyToken()`
+  (`CheckpointRecordConfiguration`), so EF treats it as an optimistic-concurrency
+  column — it is **not** store-generated (portable across SQLite / EF InMemory /
+  Postgres);
+- a same-step lost update therefore surfaces as `DbUpdateConcurrencyException`,
+  which the provider translates into `CheckpointStoreException` with code
+  `checkpoint.conflict`.
+
+**What you must do:** if your store was created before the token existed, add an
+EF migration that appends the `ConcurrencyToken` column to the checkpoint table
+(the record's documentation says so explicitly). Fresh databases created by
+`EnsureCreated` (or a new initial migration) already include it.
+
+```bash
+dotnet ef migrations add AddVolutaConcurrencyToken
+dotnet ef database update
+```
+
+The column is additive: 0.4.0 readers ignore it, so the upgrade is forward-only
+safe.
+
+## Guarded writes are the behavior — there is no flag
+
+There is **no opt-in** for guarded writes, and none to document:
+
+- the engine's checkpoint puts go through its internal writer, which carries the
+  last loaded / written step as the expected parent on every put;
+- host edits (`CompiledGraph.UpdateStateAsync`, `CompiledGraph.ForkAsync` onto an
+  existing thread) use the same guarded path;
+- a guarded put that observes a moved parent fails with `checkpoint.conflict`
+  instead of silently overwriting.
+
+Same-step rewrites are legal when issued sequentially (the engine's per-task
+progress puts rewrite the same step between drains); true concurrent same-step
+writers resolve to exactly one winner.
+
+## Recovering from `checkpoint.conflict`
+
+A `CheckpointStoreException` with `Code == "checkpoint.conflict"` means another
+writer advanced the thread between your read and your write. The losing write
+did **not** persist. Recovery:
+
+1. reload the latest state — `CompiledGraph.GetStateAsync(threadId)` for the
+   current `ThreadSnapshot`, or `GetHistoryAsync(threadId)` to inspect every
+   step;
+2. re-apply your host edit against that fresh state;
+3. retry the put.
+
+Because the losing write never persisted, there is nothing to roll back — the
+winner's snapshot is the only truth on the thread.
+
+## The wire, revisited by version
+
+| Reader version | Snapshot with v050 fields | Legacy snapshot |
+|----------------|---------------------------|-----------------|
+| 0.5.0 provider | reads everything | reads with empty progress fields |
+| 0.4.0 provider | ignores unknown fields | unchanged |
+
+Columns and fields are additive in both directions; there is no backward data
+migration when returning to 0.4.0 packages.
