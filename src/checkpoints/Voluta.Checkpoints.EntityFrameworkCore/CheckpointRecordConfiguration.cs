@@ -38,9 +38,12 @@ internal sealed class CheckpointRecordConfiguration : IEntityTypeConfiguration<C
                 static value => CheckpointStatusConversion.Parse(value))
             .IsRequired();
 
+        // v050: the converter is static (EF expression trees cannot capture an instance
+        // registry) — the checkpointer flows its TypeRegistry through
+        // <see cref="EfCheckpointRegistryScope" /> around every put / get / list.
         var snapshotConverter = new ValueConverter<CheckpointSnapshot, string>(
             static snapshot => JsonSerializer.Serialize(
-                EfCheckpointDocument.FromSnapshot(snapshot),
+                EfCheckpointDocument.FromSnapshot(snapshot, EfCheckpointRegistryScope.Current),
                 JsonSerializerOptions.Web),
             static json => EfCheckpointDocument.DeserializeToSnapshot(json));
 

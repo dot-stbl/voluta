@@ -1,5 +1,6 @@
 using Voluta.Abstractions.Checkpoint;
 using Voluta.Abstractions.Runtime;
+using Voluta.Abstractions.Serialization;
 
 namespace Voluta.Testing.Conformance;
 
@@ -321,6 +322,13 @@ public static class CheckpointerConformance
             GraphId = "comuki-graph",
             GraphVersion = "2026.11",
             CancelReason = "operator-cancelled",
+            CompletedTaskIds = ["agent", "tools"],
+            TaskAttempts = new Dictionary<string, int>(StringComparer.Ordinal) { ["agent"] = 3 },
+            JoinArrivals = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal)
+            {
+                ["gate"] = ["left"],
+            },
+            StopReason = RunStopReason.BudgetExhausted,
         };
 
         await checkpointer.PutAsync(withIdentity, cancellationToken: cancellationToken);
@@ -335,13 +343,23 @@ public static class CheckpointerConformance
                 "Conformance additive fields: identity/cancel-reason lost on roundtrip.");
         }
 
+        if (!loaded.CompletedTaskIds.SequenceEqual(["agent", "tools"], StringComparer.Ordinal)
+            || loaded.TaskAttempts["agent"] != 3
+            || !loaded.JoinArrivals["gate"].SequenceEqual(["left"], StringComparer.Ordinal)
+            || loaded.StopReason != RunStopReason.BudgetExhausted)
+        {
+            throw new InvalidOperationException(
+                "Conformance additive fields: v050 progress fields lost on roundtrip.");
+        }
+
         if (loaded.FormatVersion != 1)
         {
             throw new InvalidOperationException(
                 $"Conformance additive fields: wire version must stay 1, got {loaded.FormatVersion}.");
         }
 
-        // Legacy shape (no identity / reason fields) still roundtrips with nulls.
+        // Legacy shape (no identity / reason fields) still roundtrips with nulls and
+        // empty v050 progress fields.
         var legacyThread = $"conformance-legacy-{Guid.NewGuid():N}";
         var legacy = CheckpointerConformanceFixtures.CreateSampleSnapshot(
             legacyThread,
@@ -358,7 +376,99 @@ public static class CheckpointerConformance
             throw new InvalidOperationException(
                 "Conformance legacy fields: legacy snapshot must roundtrip with null additive fields.");
         }
+
+        if (legacyLoaded.CompletedTaskIds.Count != 0
+            || legacyLoaded.TaskAttempts.Count != 0
+            || legacyLoaded.JoinArrivals.Count != 0
+            || legacyLoaded.StopReason != RunStopReason.None)
+        {
+            throw new InvalidOperationException(
+                "Conformance legacy fields: legacy snapshot must restore with empty v050 progress fields.");
+        }
     }
+
+    /// <summary>
+    ///     v050 typed restore (capability-gated): when the provider implements
+    ///     <see cref="IRegistryAwareCheckpointer" />, a registered runtime type stamps on
+    ///     encode and materializes back typed on restore; a second get with the registry
+    ///     detached falls back to raw JSON. Providers without the capability skip this
+    ///     scenario (InMemory — unchanged behavior).
+    /// </summary>
+    /// <param name="checkpointer">Provider under test.</param>
+    /// <param name="cancellationToken">Cooperative cancellation.</param>
+    public static async Task StampedTypeRoundtripAsync(
+        ICheckpointer checkpointer,
+        CancellationToken cancellationToken = default)
+    {
+        if (checkpointer is not IRegistryAwareCheckpointer registryAware)
+        {
+            return;
+        }
+
+        var previousRegistry = registryAware.TypeRegistry;
+        try
+        {
+            var registry = new CheckpointTypeRegistry()
+                .Register<OrderRecord>("conformance:order");
+            registryAware.TypeRegistry = registry;
+
+            var threadId = $"conformance-stamp-{Guid.NewGuid():N}";
+            var order = new OrderRecord("SKU-1", 5);
+            var original = new CheckpointSnapshot
+            {
+                ThreadId = threadId,
+                Step = 1,
+                Status = GraphRunStatus.Interrupted,
+                ChannelValues = new Dictionary<string, object?>(StringComparer.Ordinal)
+                {
+                    ["order"] = order,
+                },
+                ChannelVersions = new Dictionary<string, long>(StringComparer.Ordinal) { ["order"] = 1 },
+                VersionsSeen = new Dictionary<string, IReadOnlyDictionary<string, long>>(StringComparer.Ordinal),
+                LastNode = "agent",
+                NextNodes = ["tools"],
+                InterruptPayload = order,
+            };
+
+            await checkpointer.PutAsync(original, cancellationToken: cancellationToken);
+            var loaded = await checkpointer.GetAsync(threadId, cancellationToken) ??
+                         throw new InvalidOperationException("Conformance stamped type: Get returned null.");
+            var restoredOrder = loaded.ChannelValues["order"] as OrderRecord
+                                ?? throw new InvalidOperationException(
+                                    $"Conformance stamped type: expected typed OrderRecord, got " +
+                                    $"'{loaded.ChannelValues["order"]?.GetType().FullName ?? "null"}'.");
+            if (restoredOrder != order)
+            {
+                throw new InvalidOperationException("Conformance stamped type: typed value lost on restore.");
+            }
+
+            var restoredPayload = loaded.InterruptPayload as OrderRecord
+                                  ?? throw new InvalidOperationException(
+                                      "Conformance stamped type: interrupt payload did not restore typed.");
+            if (restoredPayload != order)
+            {
+                throw new InvalidOperationException("Conformance stamped type: payload value lost on restore.");
+            }
+
+            // Registry-less consumer: the stamped payload reads back as raw JSON.
+            registryAware.TypeRegistry = null;
+            var rawLoaded = await checkpointer.GetAsync(threadId, cancellationToken) ??
+                            throw new InvalidOperationException("Conformance stamped type fallback: Get returned null.");
+            var rawValue = rawLoaded.ChannelValues["order"];
+            if (rawValue is OrderRecord or null)
+            {
+                throw new InvalidOperationException(
+                    "Conformance stamped type fallback: expected raw JSON fallback without a registry, " +
+                    $"got '{rawValue?.GetType().FullName ?? "null"}'.");
+            }
+        }
+        finally
+        {
+            registryAware.TypeRegistry = previousRegistry;
+        }
+    }
+
+    private sealed record OrderRecord(string Sku, int Quantity);
 
     /// <summary>
     ///     Two overlapping guarded puts racing for the SAME (thread, step, expectedParentStep)
@@ -463,6 +573,7 @@ public static class CheckpointerConformance
         await GuardedPutSameStepRewriteAllowedAsync(checkpointer, cancellationToken);
         await BlindPutUnchangedAsync(checkpointer, cancellationToken);
         await AdditiveFieldsRoundtripAsync(checkpointer, cancellationToken);
+        await StampedTypeRoundtripAsync(checkpointer, cancellationToken);
         await ConcurrentGuardedPutsExactlyOneWinnerAsync(checkpointer, cancellationToken);
     }
 

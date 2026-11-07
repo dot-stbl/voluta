@@ -6,3 +6,7 @@ Voluta.Checkpoints.EntityFrameworkCore.EntityFrameworkCoreCheckpointer.PutAsync(
 Voluta.Checkpoints.EntityFrameworkCore.EntityFrameworkCoreCheckpointer<TContext>.PutAsync(Voluta.Abstractions.Checkpoint.CheckpointSnapshot! snapshot, long? expectedParentStep, Voluta.Abstractions.Runtime.ICheckpointUnitOfWork? unitOfWork, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.Task!
 Voluta.Checkpoints.EntityFrameworkCore.CheckpointRecord.ConcurrencyToken.get -> long
 Voluta.Checkpoints.EntityFrameworkCore.CheckpointRecord.ConcurrencyToken.set -> void
+Voluta.Checkpoints.EntityFrameworkCore.EntityFrameworkCoreCheckpointer<TContext>.TypeRegistry.get -> Voluta.Abstractions.Serialization.CheckpointTypeRegistry?
+Voluta.Checkpoints.EntityFrameworkCore.EntityFrameworkCoreCheckpointer<TContext>.TypeRegistry.set -> void
+Voluta.Checkpoints.EntityFrameworkCore.EntityFrameworkCoreCheckpointer.TypeRegistry.get -> Voluta.Abstractions.Serialization.CheckpointTypeRegistry?
+Voluta.Checkpoints.EntityFrameworkCore.EntityFrameworkCoreCheckpointer.TypeRegistry.set -> void

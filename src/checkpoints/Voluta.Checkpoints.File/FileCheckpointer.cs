@@ -3,6 +3,7 @@ using System.Text.Json;
 using Voluta.Abstractions.Checkpoint;
 using Voluta.Abstractions.Diagnostics;
 using Voluta.Abstractions.Runtime;
+using Voluta.Abstractions.Serialization;
 using Voluta.Checkpoints.File.Wire;
 
 namespace Voluta.Checkpoints.File;
@@ -22,7 +23,7 @@ namespace Voluta.Checkpoints.File;
 ///     directory — not a <c>*.json</c> snapshot document, so Get/List/step enumeration ignore
 ///     it) holding the head step plus a provider-local opaque token.
 /// </remarks>
-public sealed class FileCheckpointer : ICheckpointer, IThreadDiscovery
+public sealed class FileCheckpointer : ICheckpointer, IThreadDiscovery, IRegistryAwareCheckpointer
 {
     private const string HeadFileName = "head.marker";
 
@@ -40,6 +41,13 @@ public sealed class FileCheckpointer : ICheckpointer, IThreadDiscovery
     {
         root = InitRoot(rootDirectory);
     }
+
+    /// <inheritdoc />
+    /// <summary>
+    ///     Host type registry (v050, <see cref="IRegistryAwareCheckpointer" />): assigned by
+    ///     the engine from <c>CompileOptions.CheckpointTypes</c>. Null — unstamped v1 behavior.
+    /// </summary>
+    public CheckpointTypeRegistry? TypeRegistry { get; set; }
 
     /// <inheritdoc />
     /// <remarks>
@@ -190,7 +198,7 @@ public sealed class FileCheckpointer : ICheckpointer, IThreadDiscovery
         var threadDir = FileCheckpointPaths.ThreadDirectory(root, snapshot.ThreadId);
         Directory.CreateDirectory(threadDir);
         var path = Path.Combine(threadDir, $"{snapshot.Step:D12}.json");
-        var document = FileCheckpointDocument.FromSnapshot(snapshot);
+        var document = FileCheckpointDocument.FromSnapshot(snapshot, TypeRegistry);
         var json = JsonSerializer.Serialize(document, JsonSerializerOptions.Web);
         System.IO.File.WriteAllText(path, json);
     }
@@ -284,7 +292,7 @@ public sealed class FileCheckpointer : ICheckpointer, IThreadDiscovery
 
             var json = System.IO.File.ReadAllText(latest);
             var document = JsonSerializer.Deserialize<FileCheckpointDocument>(json, JsonSerializerOptions.Web);
-            return Task.FromResult(document?.ToSnapshot());
+            return Task.FromResult(document?.ToSnapshot(TypeRegistry));
         }
     }
 
@@ -311,7 +319,7 @@ public sealed class FileCheckpointer : ICheckpointer, IThreadDiscovery
                 var document = JsonSerializer.Deserialize<FileCheckpointDocument>(json, JsonSerializerOptions.Web);
                 if (document is not null)
                 {
-                    list.Add(document.ToSnapshot());
+                    list.Add(document.ToSnapshot(TypeRegistry));
                 }
             }
 

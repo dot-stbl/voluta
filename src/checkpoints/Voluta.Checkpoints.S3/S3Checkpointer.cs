@@ -6,6 +6,7 @@ using Amazon.S3.Model;
 using Voluta.Abstractions.Checkpoint;
 using Voluta.Abstractions.Diagnostics;
 using Voluta.Abstractions.Runtime;
+using Voluta.Abstractions.Serialization;
 using Voluta.Checkpoints.S3.Wire;
 
 namespace Voluta.Checkpoints.S3;
@@ -21,7 +22,7 @@ namespace Voluta.Checkpoints.S3;
 ///     <c>checkpoint.unsupported_value_type</c>.
 ///     Implements <see cref="IThreadDiscovery" /> via prefix listing with delimiter <c>/</c>.
 /// </remarks>
-public sealed class S3Checkpointer : ICheckpointer, IThreadDiscovery
+public sealed class S3Checkpointer : ICheckpointer, IThreadDiscovery, IRegistryAwareCheckpointer
 {
     private readonly IAmazonS3 client;
     private readonly S3CheckpointerOptions options;
@@ -38,6 +39,12 @@ public sealed class S3Checkpointer : ICheckpointer, IThreadDiscovery
         this.options = options;
         bucket = InitBucket(options);
     }
+
+    /// <summary>
+    ///     Host type registry (v050, <see cref="IRegistryAwareCheckpointer" />): assigned by
+    ///     the engine from <c>CompileOptions.CheckpointTypes</c>. Null — unstamped v1 behavior.
+    /// </summary>
+    public CheckpointTypeRegistry? TypeRegistry { get; set; }
 
     /// <inheritdoc />
     /// <remarks>
@@ -75,7 +82,7 @@ public sealed class S3Checkpointer : ICheckpointer, IThreadDiscovery
     {
         try
         {
-            var document = S3CheckpointDocument.FromSnapshot(snapshot);
+            var document = S3CheckpointDocument.FromSnapshot(snapshot, TypeRegistry);
             var json = JsonSerializer.Serialize(document, JsonSerializerOptions.Web);
             if (unitOfWork is not null)
             {
@@ -342,7 +349,12 @@ public sealed class S3Checkpointer : ICheckpointer, IThreadDiscovery
 
             return latestKey is null
                 ? null
-                : await S3CheckpointBody.GetSnapshotAsync(client, bucket, latestKey, cancellationToken);
+                : await S3CheckpointBody.GetSnapshotAsync(
+                    client,
+                    bucket,
+                    latestKey,
+                    TypeRegistry,
+                    cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException
                                           and not CheckpointStoreException)
@@ -386,6 +398,7 @@ public sealed class S3Checkpointer : ICheckpointer, IThreadDiscovery
                     client,
                     bucket,
                     orderedKeys[index],
+                    TypeRegistry,
                     cancellationToken);
                 snapshots[index] = snapshot
                     ?? throw new CheckpointStoreException(
@@ -536,6 +549,7 @@ file static class S3CheckpointBody
         IAmazonS3 client,
         string bucket,
         string key,
+        CheckpointTypeRegistry? typeRegistry,
         CancellationToken cancellationToken)
     {
         using var response = await client.GetObjectAsync(
@@ -550,6 +564,6 @@ file static class S3CheckpointBody
         using var reader = new StreamReader(stream, Encoding.UTF8);
         var json = await reader.ReadToEndAsync(cancellationToken);
         var document = JsonSerializer.Deserialize<S3CheckpointDocument>(json, JsonSerializerOptions.Web);
-        return document?.ToSnapshot();
+        return document?.ToSnapshot(typeRegistry);
     }
 }
