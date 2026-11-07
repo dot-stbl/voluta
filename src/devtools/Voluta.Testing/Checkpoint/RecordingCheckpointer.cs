@@ -1,6 +1,19 @@
 using System.Collections.Concurrent;
 using Voluta.Abstractions.Checkpoint;
+using Voluta.Abstractions.Runtime;
+
 namespace Voluta.Testing.Checkpoint;
+
+/// <summary>
+///     Recorded <see cref="ICheckpointer.PutAsync(CheckpointSnapshot, long?, ICheckpointUnitOfWork?, System.Threading.CancellationToken)" /> invocation (snapshot + guard arguments).
+/// </summary>
+/// <param name="Snapshot">Snapshot passed to Put.</param>
+/// <param name="ExpectedParentStep">Optimistic-concurrency guard passed to Put.</param>
+/// <param name="UnitOfWork">Host unit of work passed to Put (null when standalone).</param>
+public sealed record CheckpointPutRecord(
+    CheckpointSnapshot Snapshot,
+    long? ExpectedParentStep,
+    ICheckpointUnitOfWork? UnitOfWork);
 
 /// <summary>
 ///     <see cref="ICheckpointer" /> decorator that records Put/Get/List calls for assertions.
@@ -10,12 +23,17 @@ public sealed class RecordingCheckpointer(ICheckpointer inner) : ICheckpointer, 
 {
     private readonly ConcurrentQueue<CheckpointGetRecord> gets = new();
     private readonly ConcurrentQueue<CheckpointListRecord> lists = new();
-    private readonly ConcurrentQueue<CheckpointSnapshot> puts = new();
+    private readonly ConcurrentQueue<CheckpointPutRecord> puts = new();
 
     /// <summary>
-    ///     Snapshots passed to <see cref="PutAsync" />, in call order.
+    ///     Snapshots passed to <see cref="PutAsync(CheckpointSnapshot, long?, ICheckpointUnitOfWork?, System.Threading.CancellationToken)" />, in call order.
     /// </summary>
-    public IReadOnlyList<CheckpointSnapshot> Puts => [.. puts];
+    public IReadOnlyList<CheckpointSnapshot> Puts => [.. puts.Select(static put => put.Snapshot)];
+
+    /// <summary>
+    ///     Full put records (snapshot + expected parent step + unit of work), in call order.
+    /// </summary>
+    public IReadOnlyList<CheckpointPutRecord> PutRecords => [.. puts];
 
     /// <summary>
     ///     Get calls (thread id + result), in call order.
@@ -28,10 +46,23 @@ public sealed class RecordingCheckpointer(ICheckpointer inner) : ICheckpointer, 
     public IReadOnlyList<CheckpointListRecord> Lists => [.. lists];
 
     /// <inheritdoc />
-    public async Task PutAsync(CheckpointSnapshot snapshot, CancellationToken cancellationToken = default)
+    /// <remarks>Blind passthrough with recording.</remarks>
+    public Task PutAsync(
+        CheckpointSnapshot snapshot,
+        CancellationToken cancellationToken = default)
     {
-        await inner.PutAsync(snapshot, cancellationToken);
-        puts.Enqueue(snapshot);
+        return PutAsync(snapshot, null, null, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public async Task PutAsync(
+        CheckpointSnapshot snapshot,
+        long? expectedParentStep,
+        ICheckpointUnitOfWork? unitOfWork,
+        CancellationToken cancellationToken)
+    {
+        await inner.PutAsync(snapshot, expectedParentStep, unitOfWork, cancellationToken);
+        puts.Enqueue(new CheckpointPutRecord(snapshot, expectedParentStep, unitOfWork));
     }
 
     /// <inheritdoc />

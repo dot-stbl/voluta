@@ -1,9 +1,10 @@
 using Voluta.Abstractions.Checkpoint;
+using Voluta.Abstractions.Runtime;
 
 namespace Voluta.Testing.Checkpoint;
 
 /// <summary>
-///     <see cref="ICheckpointer" /> decorator that throws on the N-th <see cref="PutAsync" />
+///     <see cref="ICheckpointer" /> decorator that throws on the N-th <see cref="PutAsync(CheckpointSnapshot, long?, ICheckpointUnitOfWork?, CancellationToken)" />
 ///     (1-based) to simulate crash-between-supersteps.
 /// </summary>
 public sealed class FaultInjectingCheckpointer : ICheckpointer, IThreadDiscovery
@@ -45,12 +46,28 @@ public sealed class FaultInjectingCheckpointer : ICheckpointer, IThreadDiscovery
     public int PutAttempts => Volatile.Read(ref putCount);
 
     /// <inheritdoc />
-    public Task PutAsync(CheckpointSnapshot snapshot, CancellationToken cancellationToken = default)
+    /// <remarks>
+    ///     Blind passthrough; the attempt still counts toward <see cref="PutAttempts" /> via
+    ///     the guarded overload.
+    /// </remarks>
+    public Task PutAsync(
+        CheckpointSnapshot snapshot,
+        CancellationToken cancellationToken = default)
+    {
+        return PutAsync(snapshot, null, null, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    public Task PutAsync(
+        CheckpointSnapshot snapshot,
+        long? expectedParentStep,
+        ICheckpointUnitOfWork? unitOfWork,
+        CancellationToken cancellationToken)
     {
         var attempt = Interlocked.Increment(ref putCount);
         return attempt == failOnPutNumber
             ? throw fault
-            : inner.PutAsync(snapshot, cancellationToken);
+            : inner.PutAsync(snapshot, expectedParentStep, unitOfWork, cancellationToken);
     }
 
     /// <inheritdoc />

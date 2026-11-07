@@ -18,7 +18,8 @@ internal static class RunEngineSnapshots
         IReadOnlyList<PendingSend> pendingSends,
         object? interruptPayload,
         IReadOnlyDictionary<string, object?>? channelValues = null,
-        IReadOnlyList<PendingInterrupt>? pendingInterrupts = null)
+        IReadOnlyList<PendingInterrupt>? pendingInterrupts = null,
+        (string? GraphId, string? GraphVersion) identity = default)
     {
         var versions = store.Versions;
         var channelVersions = new Dictionary<string, long>(versions.Count, StringComparer.Ordinal);
@@ -43,6 +44,8 @@ internal static class RunEngineSnapshots
             PendingInterrupts = pendingInterrupts is { Count: > 0 }
                 ? [.. pendingInterrupts]
                 : [],
+            GraphId = identity.GraphId,
+            GraphVersion = identity.GraphVersion,
         };
     }
 }

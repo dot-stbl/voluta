@@ -23,6 +23,41 @@ namespace Voluta.Runtime.Engine;
 internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpointer)
 {
     /// <summary>
+    ///     Creates the per-run checkpoint session (guarded puts, UoW handoff, graph identity).
+    /// </summary>
+    private RunCheckpointWriter CreateWriter(RunOptions options)
+    {
+        return new RunCheckpointWriter(checkpointer, options.UnitOfWork)
+        {
+            GraphId = topology.GraphId,
+            GraphVersion = topology.GraphVersion,
+        };
+    }
+
+    /// <summary>
+    ///     Resume / continue identity validation (D2): a snapshot without a graph version
+    ///     (legacy snapshot from earlier versions) is accepted unchecked; a snapshot whose
+    ///     identity pair differs from the executing graph fails
+    ///     <see cref="GraphVersionMismatchException" /> before any node executes or put lands.
+    /// </summary>
+    private void ValidateGraphIdentity(CheckpointSnapshot checkpoint, string threadId)
+    {
+        if (checkpoint.GraphVersion is null)
+        {
+            return;
+        }
+
+        if (!string.Equals(checkpoint.GraphId, topology.GraphId, StringComparison.Ordinal)
+            || !string.Equals(checkpoint.GraphVersion, topology.GraphVersion, StringComparison.Ordinal))
+        {
+            throw new GraphVersionMismatchException(
+                $"Thread '{threadId}' checkpoint identity " +
+                $"({checkpoint.GraphId ?? "<null>"}, {checkpoint.GraphVersion}) does not match the " +
+                $"executing graph ({topology.GraphId ?? "<null>"}, {topology.GraphVersion ?? "<null>"}).");
+        }
+    }
+
+    /// <summary>
     ///     Runs from input (or empty) until terminal, yielding stream events for the selected mode.
     /// </summary>
     public async IAsyncEnumerable<StreamEvent> StreamAsync(
@@ -31,6 +66,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
         [System.Runtime.CompilerServices.EnumeratorCancellation]
         CancellationToken cancellationToken = default)
     {
+        var checkpointer = CreateWriter(options);
         var store = new ChannelStore(topology.Channels);
         var inputList = input as IList<ChannelWrite> ?? [.. input];
         if (inputList.Count > 0)
@@ -46,6 +82,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
         long step = 0;
         string? lastNode = null;
 
+        // First put of a fresh run: no loaded/written snapshot yet → guard is null (blind), as before.
         await checkpointer.PutAsync(
             RunEngineSnapshots.Build(
                 options.ThreadId,
@@ -55,7 +92,8 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                 lastNode,
                 nextNodes,
                 [],
-                null),
+                null,
+                identity: checkpointer.Identity),
             cancellationToken);
 
         if (RunEngineStreaming.EmitsLifecycle(options.StreamMode))
@@ -69,6 +107,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
         }
 
         await foreach (var item in RunLoopAsync(
+                           checkpointer,
                            options,
                            store,
                            RunEngineRouting.ToPullTasks(topology, nextNodes),
@@ -88,12 +127,13 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
     public async IAsyncEnumerable<StreamEvent> ResumeAsync(
         string threadId,
         Command command,
-        StreamMode streamMode,
+        RunOptions options,
         [System.Runtime.CompilerServices.EnumeratorCancellation]
         CancellationToken cancellationToken = default)
     {
         CommandTaxonomy.EnsureValid(command);
 
+        var checkpointer = CreateWriter(options);
         var checkpoint = await checkpointer.GetAsync(threadId, cancellationToken) ??
                          throw new GraphInvalidResumeException(
                              $"No checkpoint found for thread '{threadId}'.");
@@ -102,6 +142,8 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
             throw new GraphInvalidResumeException(
                 $"Thread '{threadId}' is not interrupted (status={checkpoint.Status}).");
         }
+
+        ValidateGraphIdentity(checkpoint, threadId);
 
         var pendingInterrupts = RunEngineLoopHelpers.ResolvePendingInterrupts(checkpoint);
         CommandTaxonomy.EnsureMultiInterruptResumes(command, pendingInterrupts);
@@ -134,13 +176,11 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
             readyTasks = RunEngineRouting.ToPullTasks(topology, nextNodes);
         }
 
-        var options = new RunOptions { ThreadId = threadId, StreamMode = streamMode };
-
-        if (RunEngineStreaming.EmitsLifecycle(streamMode))
+        if (RunEngineStreaming.EmitsLifecycle(options.StreamMode))
         {
             yield return new StreamEvent
             {
-                Mode = streamMode,
+                Mode = options.StreamMode,
                 Kind = StreamEventKind.Start,
                 Step = checkpoint.Step
             };
@@ -150,6 +190,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
         if (remainingAfterResume.Count > 0)
         {
             await foreach (var item in RunPartialMultiInterruptResumeAsync(
+                               checkpointer,
                                options,
                                store,
                                readyTasks,
@@ -166,6 +207,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
         }
 
         await foreach (var item in RunLoopAsync(
+                           checkpointer,
                            options,
                            store,
                            readyTasks,
@@ -180,8 +222,26 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
     }
 
     /// <summary>
+    ///     Resumes an interrupted thread with a command and stream mode.
+    /// </summary>
+    public IAsyncEnumerable<StreamEvent> ResumeAsync(
+        string threadId,
+        Command command,
+        StreamMode streamMode,
+        CancellationToken cancellationToken = default)
+    {
+        return ResumeAsync(
+            threadId,
+            command,
+            new RunOptions { ThreadId = threadId, StreamMode = streamMode },
+            cancellationToken);
+    }
+
+    /// <summary>
     ///     Continues a Running thread from the latest checkpoint (after UpdateState / Fork).
-    ///     Does not re-inject HITL resume payload; use <see cref="ResumeAsync" /> for Interrupted.
+    ///     Does not re-inject HITL resume payload; use
+    ///     <see cref="ResumeAsync(string, Command, Voluta.Abstractions.Runtime.RunOptions, System.Threading.CancellationToken)" />
+    ///     for Interrupted.
     /// </summary>
     /// <remarks>
     ///     <para>
@@ -195,10 +255,11 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
     /// </remarks>
     public async IAsyncEnumerable<StreamEvent> ContinueAsync(
         string threadId,
-        StreamMode streamMode,
+        RunOptions options,
         [System.Runtime.CompilerServices.EnumeratorCancellation]
         CancellationToken cancellationToken = default)
     {
+        var checkpointer = CreateWriter(options);
         var checkpoint = await checkpointer.GetAsync(threadId, cancellationToken)
                          ?? throw new GraphThreadNotFoundException(
                              $"No checkpoint found for thread '{threadId}'.");
@@ -208,6 +269,8 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                 $"Thread '{threadId}' is not Running (status={checkpoint.Status}); " +
                 "use ResumeAsync for Interrupted or UpdateStateAsync after Failed/Cancelled.");
         }
+
+        ValidateGraphIdentity(checkpoint, threadId);
 
         var store = new ChannelStore(topology.Channels);
         store.Restore(checkpoint.ChannelValues, checkpoint.ChannelVersions, checkpoint.VersionsSeen);
@@ -219,13 +282,11 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                 $"Thread '{threadId}' has no next nodes or pending sends to continue.");
         }
 
-        var options = new RunOptions { ThreadId = threadId, StreamMode = streamMode };
-
-        if (RunEngineStreaming.EmitsLifecycle(streamMode))
+        if (RunEngineStreaming.EmitsLifecycle(options.StreamMode))
         {
             yield return new StreamEvent
             {
-                Mode = streamMode,
+                Mode = options.StreamMode,
                 Kind = StreamEventKind.Start,
                 Step = checkpoint.Step
             };
@@ -235,6 +296,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
         if (checkpoint.PendingSends.Count > 0)
         {
             await foreach (var item in ContinueWithPendingSendsAsync(
+                               checkpointer,
                                options,
                                store,
                                nextNodes: [],
@@ -248,6 +310,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
         }
 
         await foreach (var item in RunLoopAsync(
+                           checkpointer,
                            options,
                            store,
                            RunEngineRouting.ToPullTasks(topology, nextNodes),
@@ -262,10 +325,25 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
     }
 
     /// <summary>
+    ///     Continues a Running thread with a stream mode (builds default run options).
+    /// </summary>
+    public IAsyncEnumerable<StreamEvent> ContinueAsync(
+        string threadId,
+        StreamMode streamMode,
+        CancellationToken cancellationToken = default)
+    {
+        return ContinueAsync(
+            threadId,
+            new RunOptions { ThreadId = threadId, StreamMode = streamMode },
+            cancellationToken);
+    }
+
+    /// <summary>
     ///     Progressive multi-interrupt: run only resumed tasks for one superstep, then park
     ///     with remaining <see cref="PendingInterrupt" /> list (status Interrupted).
     /// </summary>
     private async IAsyncEnumerable<StreamEvent> RunPartialMultiInterruptResumeAsync(
+        RunCheckpointWriter checkpointer,
         RunOptions options,
         ChannelStore store,
         IReadOnlyList<ReadyTask> readyTasks,
@@ -289,7 +367,8 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                     checkpoint.LastNode,
                     RunEngineLoopHelpers.DistinctNodeNames(readyTasks),
                     [],
-                    null),
+                    null,
+                    identity: checkpointer.Identity),
                 cancellationToken);
             yield return RunEngineStreaming.Terminal(
                 options.StreamMode,
@@ -359,7 +438,8 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                 [],
                 firstPayload,
                 channelValues: null,
-                pendingInterrupts: remainingInterrupts),
+                pendingInterrupts: remainingInterrupts,
+                identity: checkpointer.Identity),
             cancellationToken);
 
         yield return RunEngineStreaming.Terminal(
@@ -371,6 +451,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
     }
 
     private async IAsyncEnumerable<StreamEvent> ContinueWithPendingSendsAsync(
+        RunCheckpointWriter checkpointer,
         RunOptions options,
         ChannelStore store,
         IReadOnlyList<string> nextNodes,
@@ -414,7 +495,8 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                         lastNode,
                         [],
                         [],
-                        interruptPayload: null),
+                        interruptPayload: null,
+                        identity: checkpointer.Identity),
                     cancellationToken);
 
                 yield return RunEngineStreaming.Terminal(
@@ -439,7 +521,8 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                         lastNode,
                         failedNodeNames,
                         [],
-                        null),
+                        null,
+                        identity: checkpointer.Identity),
                     cancellationToken);
 
                 yield return RunEngineStreaming.Terminal(
@@ -502,6 +585,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
     }
 
     private async IAsyncEnumerable<StreamEvent> RunLoopAsync(
+        RunCheckpointWriter checkpointer,
         RunOptions options,
         ChannelStore store,
         IReadOnlyList<ReadyTask> initialReady,
@@ -530,7 +614,8 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                         lastNode,
                         [],
                         [],
-                        interruptPayload: null),
+                        interruptPayload: null,
+                        identity: checkpointer.Identity),
                     cancellationToken);
 
                 yield return RunEngineStreaming.Terminal(
@@ -555,7 +640,8 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                         lastNode,
                         failedNodeNames,
                         [],
-                        null),
+                        null,
+                        identity: checkpointer.Identity),
                     cancellationToken);
 
                 yield return RunEngineStreaming.Terminal(
@@ -650,7 +736,7 @@ file static class RunEngineLoopHelpers
 {
     public static async IAsyncEnumerable<SuperstepStreamItem> RunSuperstepStreamingAsync(
         GraphTopology topology,
-        ICheckpointer checkpointer,
+        RunCheckpointWriter checkpointer,
         RunOptions options,
         ChannelStore store,
         IReadOnlyList<ReadyTask> orderedReady,
@@ -727,7 +813,7 @@ file static class RunEngineLoopHelpers
 
     public static async Task<SuperstepCommit> ExecuteSuperstepAsync(
         GraphTopology topology,
-        ICheckpointer checkpointer,
+        RunCheckpointWriter checkpointer,
         RunOptions options,
         ChannelStore store,
         IReadOnlyList<ReadyTask> orderedReady,
@@ -767,7 +853,8 @@ file static class RunEngineLoopHelpers
                     lastNode,
                     cancelledNodes,
                     [],
-                    null),
+                    null,
+                    identity: checkpointer.Identity),
                 cancellationToken);
 
             superstep.SetTag(VolutaDiagnostics.TagRunStatus, nameof(GraphRunStatus.Cancelled));
@@ -797,7 +884,8 @@ file static class RunEngineLoopHelpers
                     lastNode,
                     failedNodes,
                     [],
-                    null),
+                    null,
+                    identity: checkpointer.Identity),
                 cancellationToken);
 
             superstep.SetError(failure);
@@ -836,7 +924,8 @@ file static class RunEngineLoopHelpers
                     nextNodeNames,
                     [],
                     primaryPayload,
-                    pendingInterrupts: pendingInterrupts),
+                    pendingInterrupts: pendingInterrupts,
+                    identity: checkpointer.Identity),
                 cancellationToken);
 
             superstep.SetTag(VolutaDiagnostics.TagRunStatus, nameof(GraphRunStatus.Interrupted));
@@ -874,7 +963,8 @@ file static class RunEngineLoopHelpers
                     lastNode,
                     applyFailedNodes,
                     [],
-                    null),
+                    null,
+                    identity: checkpointer.Identity),
                 cancellationToken);
 
             superstep.SetError(applyError);
@@ -976,7 +1066,8 @@ file static class RunEngineLoopHelpers
                 checkpointNextNodes,
                 pendingSends,
                 null,
-                postApplySnapshot),
+                postApplySnapshot,
+                identity: checkpointer.Identity),
             cancellationToken);
 
         superstep.SetTag(VolutaDiagnostics.TagRunStatus, nameof(GraphRunStatus.Running));

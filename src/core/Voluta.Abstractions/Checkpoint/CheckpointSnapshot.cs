@@ -78,4 +78,25 @@ public sealed class CheckpointSnapshot
     ///     snapshots that only set <see cref="InterruptPayload" />). Additive wire field — empty default.
     /// </summary>
     public IReadOnlyList<PendingInterrupt> PendingInterrupts { get; init; } = [];
+
+    /// <summary>
+    ///     Host-assigned graph identifier of the compiled graph that wrote this snapshot
+    ///     (null for legacy snapshots written before graph identity existed). Additive wire
+    ///     field — null default, same precedent as <see cref="PendingInterrupts" />.
+    /// </summary>
+    public string? GraphId { get; init; }
+
+    /// <summary>
+    ///     Host-assigned graph version paired with <see cref="GraphId" /> (null for legacy
+    ///     snapshots). Additive wire field — null default, same precedent as
+    ///     <see cref="PendingInterrupts" />.
+    /// </summary>
+    public string? GraphVersion { get; init; }
+
+    /// <summary>
+    ///     Host-supplied reason recorded when this snapshot was written by an out-of-band
+    ///     cancellation (null otherwise). Additive wire field — null default, same precedent
+    ///     as <see cref="PendingInterrupts" />.
+    /// </summary>
+    public string? CancelReason { get; init; }
 }

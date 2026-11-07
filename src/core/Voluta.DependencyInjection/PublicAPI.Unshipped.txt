@@ -8,3 +8,6 @@ Voluta.DependencyInjection.Store.VolutaStoreBuilder.Services.get -> Microsoft.Ex
 Voluta.DependencyInjection.Store.VolutaStoreBuilder.VolutaStoreBuilder(Microsoft.Extensions.DependencyInjection.IServiceCollection! services) -> void
 Voluta.DependencyInjection.Store.VolutaStoreBuilderExtensions
 Voluta.DependencyInjection.VolutaBuilder.Store.get -> Voluta.DependencyInjection.Store.VolutaStoreBuilder!
+
+Voluta.DependencyInjection.VolutaBuilder.Graphs(Voluta.Graph.CompiledGraph! defaultGraph, params Voluta.Graph.CompiledGraph![]! versions) -> Voluta.DependencyInjection.VolutaBuilder!
+Voluta.DependencyInjection.VolutaBuilder.Graphs(Voluta.Graph.IGraphResolver! resolver) -> Voluta.DependencyInjection.VolutaBuilder!

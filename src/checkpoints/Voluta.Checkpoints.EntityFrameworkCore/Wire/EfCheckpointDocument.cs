@@ -35,6 +35,12 @@ internal sealed class EfCheckpointDocument
 
     public JsonElement? InterruptPayload { get; set; }
 
+    public string? GraphId { get; set; }
+
+    public string? GraphVersion { get; set; }
+
+    public string? CancelReason { get; set; }
+
     public static EfCheckpointDocument FromSnapshot(CheckpointSnapshot snapshot)
     {
         return new EfCheckpointDocument
@@ -83,6 +89,9 @@ internal sealed class EfCheckpointDocument
             LastNode = snapshot.LastNode,
             NextNodes = [.. snapshot.NextNodes],
             InterruptPayload = EfCheckpointJson.ToElement(snapshot.InterruptPayload),
+            GraphId = snapshot.GraphId,
+            GraphVersion = snapshot.GraphVersion,
+            CancelReason = snapshot.CancelReason,
         };
     }
 
@@ -142,6 +151,9 @@ internal sealed class EfCheckpointDocument
             LastNode = LastNode,
             NextNodes = [.. NextNodes],
             InterruptPayload = EfCheckpointJson.FromElement(InterruptPayload),
+            GraphId = GraphId,
+            GraphVersion = GraphVersion,
+            CancelReason = CancelReason,
         };
     }
 

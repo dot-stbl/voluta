@@ -58,8 +58,10 @@ public static class StudioApiEndpointRouteBuilderExtensions
 
         group.MapGet(
             "/topology",
-            (VolutaUiSession session) =>
-                Results.Json(VolutaUiJson.ToWire(session.Topology), JsonSerializerOptions.Web));
+            async (VolutaUiSession session, CancellationToken cancellationToken) =>
+                Results.Json(
+                    VolutaUiJson.ToWire(await session.GetTopologyAsync(cancellationToken)),
+                    JsonSerializerOptions.Web));
 
         group.MapGet(
             "/threads",

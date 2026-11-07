@@ -8,6 +8,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\..\src\core\Voluta.Abstractions\Voluta.Abstractions.csproj" />
+    <ProjectReference Include="..\..\..\src\devtools\Voluta.Testing\Voluta.Testing.csproj" />
   </ItemGroup>
 
   <ItemGroup>

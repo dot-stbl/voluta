@@ -4,13 +4,43 @@ using Voluta.Abstractions.Diagnostics;
 using Voluta.Abstractions.Results;
 using Voluta.Checkpoint;
 using Voluta.Exceptions;
+using Voluta.Graph;
 using Voluta.Graph.Builder;
+using Voluta.Graph.Options;
 using Xunit;
 
 namespace Voluta.Unit.Graph;
 
 public sealed class StateGraphCompileShould
 {
+    [Fact(DisplayName = "Given compile options with graph identity, when Compile is called, then the pair lands on the compiled graph")]
+    public void CarryIdentityFromCompileOptions()
+    {
+        var graph = new StateGraph()
+            .AddNode("a", static (_, _) => Task.FromResult<NodeResult>(NodeResult.Continue()))
+            .AddEdge(GraphConstants.Start, "a")
+            .AddEdge("a", GraphConstants.End)
+            .Compile(
+                new InMemoryCheckpointer(),
+                new CompileOptions { GraphId = "comuki-graph", GraphVersion = "2026.11.0" });
+
+        graph.GraphId.ShouldBe("comuki-graph");
+        graph.GraphVersion.ShouldBe("2026.11.0");
+    }
+
+    [Fact(DisplayName = "Given compile options without identity, when Compile is called, then the graph stays anonymous")]
+    public void StayAnonymousWithoutIdentity()
+    {
+        var graph = new StateGraph()
+            .AddNode("a", static (_, _) => Task.FromResult<NodeResult>(NodeResult.Continue()))
+            .AddEdge(GraphConstants.Start, "a")
+            .AddEdge("a", GraphConstants.End)
+            .Compile(new InMemoryCheckpointer());
+
+        graph.GraphId.ShouldBeNull();
+        graph.GraphVersion.ShouldBeNull();
+    }
+
     [Fact(DisplayName = "Given missing START edge, when Compile is called, then fails")]
     public void FailWhenStartMissing()
     {

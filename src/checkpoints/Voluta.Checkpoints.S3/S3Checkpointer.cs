@@ -1,9 +1,11 @@
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using Amazon.S3;
 using Amazon.S3.Model;
 using Voluta.Abstractions.Checkpoint;
 using Voluta.Abstractions.Diagnostics;
+using Voluta.Abstractions.Runtime;
 using Voluta.Checkpoints.S3.Wire;
 
 namespace Voluta.Checkpoints.S3;
@@ -38,23 +40,53 @@ public sealed class S3Checkpointer : ICheckpointer, IThreadDiscovery
     }
 
     /// <inheritdoc />
-    public async Task PutAsync(CheckpointSnapshot snapshot, CancellationToken cancellationToken = default)
+    /// <remarks>
+    ///     <para>
+    ///         Blind write: unconditional snapshot put; the latest-step pointer is refreshed
+    ///         unconditionally but never regressed (max of the current and the written step) —
+    ///         the shipped last-writer-wins behavior.
+    ///     </para>
+    ///     <para>
+    ///         Guarded puts (<paramref name="expectedParentStep" /> non-null) are implemented as
+    ///         a conditional write (S3 If-Match) on a per-thread latest-step pointer document,
+    ///         performed BEFORE the snapshot object put: the pointer's ETag is read, and the
+    ///         pointer is replaced only if it has not changed since — the atomic check-and-set.
+    ///         A competing writer that lost the pointer race never writes its snapshot, so no
+    ///         history is silently overwritten. When the pointer document is absent (threads
+    ///         written before guarded puts existed), the guard falls back to enumerating the
+    ///         thread's step documents and initializes the pointer with a conditional create
+    ///         (If-None-Match: <c>*</c>) — a competing first guarded put loses with 412 →
+    ///         <c>checkpoint.conflict</c> instead of silently double-initializing; after the
+    ///         once-per-thread migration every put is conditional.
+    ///     </para>
+    ///     <para>
+    ///         Backend note: If-Match / If-None-Match conditional puts require S3-compatible
+    ///         storage that enforces write preconditions; the pointer write fails closed
+    ///         (conflict) when the backend rejects the precondition. A pointer that is ahead of
+    ///         the stored snapshots (crash between the two puts) also fails closed: subsequent
+    ///         guarded puts conflict until a blind put re-baselines the pointer.
+    ///     </para>
+    /// </remarks>
+    public Task PutAsync(
+        CheckpointSnapshot snapshot,
+        long? expectedParentStep,
+        ICheckpointUnitOfWork? unitOfWork,
+        CancellationToken cancellationToken)
     {
         try
         {
             var document = S3CheckpointDocument.FromSnapshot(snapshot);
             var json = JsonSerializer.Serialize(document, JsonSerializerOptions.Web);
-            var key = S3CheckpointKeys.ObjectKey(options.KeyPrefix, snapshot.ThreadId, snapshot.Step);
+            if (unitOfWork is not null)
+            {
+                // Transactional participation: the host owns the commit boundary — route the
+                // write through its unit of work (explicit handoff, no ambient flow).
+                return unitOfWork.ExecuteAsync(
+                    token => PutCoreAsync(snapshot, json, expectedParentStep, token),
+                    CancellationToken.None);
+            }
 
-            await client.PutObjectAsync(
-                new PutObjectRequest
-                {
-                    BucketName = bucket,
-                    Key = key,
-                    ContentBody = json,
-                    ContentType = "application/json",
-                },
-                cancellationToken);
+            return PutCoreAsync(snapshot, json, expectedParentStep, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException
                                           and not CheckpointStoreException)
@@ -64,6 +96,223 @@ public sealed class S3Checkpointer : ICheckpointer, IThreadDiscovery
                 $"Failed to put checkpoint for thread '{snapshot.ThreadId}' step {snapshot.Step}.",
                 exception);
         }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    ///     Blind write: unconditional snapshot put with an unconditional (never-regressing)
+    ///     pointer refresh — the shipped 0.4.0 behavior.
+    ///     <para>
+    ///         RS0027: the guarded 4-parameter override deliberately takes ALL parameters as
+    ///         required (no optional-parameter shadowing of this shipped form), so this shipped
+    ///         overload is no longer the widest.
+    ///     </para>
+    /// </remarks>
+    [global::System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "ApiDesign",
+        "RS0027: API with optional parameter(s) should have the most parameters amongst its public overloads",
+        Justification = "Shipped blind put is frozen; the guarded override takes all parameters as required.")]
+    [global::System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "ApiDesign",
+        "RS0027: API with optional parameter(s) should have the most parameters amongst its public overloads",
+        Justification = "Shipped blind put is frozen; the guarded override takes all parameters as required.")]
+    public Task PutAsync(
+        CheckpointSnapshot snapshot,
+        CancellationToken cancellationToken = default)
+    {
+        return PutAsync(snapshot, expectedParentStep: null, unitOfWork: null, cancellationToken);
+    }
+
+    private async Task PutCoreAsync(
+        CheckpointSnapshot snapshot,
+        string json,
+        long? expectedParentStep,
+        CancellationToken cancellationToken)
+    {
+        var key = S3CheckpointKeys.ObjectKey(options.KeyPrefix, snapshot.ThreadId, snapshot.Step);
+        var pointerKey = S3CheckpointKeys.PointerKey(options.KeyPrefix, snapshot.ThreadId);
+        if (expectedParentStep is { } expected)
+        {
+            await GuardLatestStepAsync(snapshot, pointerKey, expected, cancellationToken);
+        }
+
+        await client.PutObjectAsync(
+            new PutObjectRequest
+            {
+                BucketName = bucket,
+                Key = key,
+                ContentBody = json,
+                ContentType = "application/json",
+            },
+            cancellationToken);
+
+        if (expectedParentStep is null)
+        {
+            // Blind put: refresh the pointer unconditionally (last writer wins, as before) but
+            // never regress it — an out-of-order blind put of a lower step must not break the
+            // following guarded puts.
+            var pointerStep = await GetPointerStepAsync(pointerKey, cancellationToken);
+            await PutPointerAsync(
+                pointerKey,
+                Math.Max(pointerStep ?? snapshot.Step, snapshot.Step),
+                etag: null,
+                ifNoneMatch: false,
+                cancellationToken);
+        }
+    }
+
+    /// <summary>
+    ///     Atomic check-and-set of the latest-step pointer (If-Match). Throws
+    ///     <see cref="CheckpointStoreException" /> with <see cref="VolutaErrorCodes.CheckpointConflict" />
+    ///     when another writer won the race or the expected parent step no longer matches.
+    /// </summary>
+    private async Task GuardLatestStepAsync(
+        CheckpointSnapshot snapshot,
+        string pointerKey,
+        long expected,
+        CancellationToken cancellationToken)
+    {
+        string? etag = null;
+        long? pointerStep = null;
+        try
+        {
+            using var pointer = await client.GetObjectAsync(
+                new GetObjectRequest { BucketName = bucket, Key = pointerKey },
+                cancellationToken);
+            etag = pointer.ETag;
+            using var reader = new StreamReader(pointer.ResponseStream, System.Text.Encoding.UTF8);
+            var body = await reader.ReadToEndAsync(cancellationToken);
+            pointerStep = long.TryParse(body.Trim(), out var parsed) ? parsed : null;
+        }
+        catch (AmazonS3Exception exception) when (exception.StatusCode == HttpStatusCode.NotFound)
+        {
+            // Pointer absent (legacy thread): fall through to the enumerate-and-initialize path.
+        }
+
+        if (etag is not null)
+        {
+            if (pointerStep != expected)
+            {
+                throw Conflict(snapshot, expected, pointerStep);
+            }
+
+            // Conditional replace: succeeds only if no competing writer moved the pointer.
+            // The pointer never regresses below its current step (same-step rewrite / fork).
+            await PutPointerAsync(
+                pointerKey,
+                Math.Max(pointerStep!.Value, snapshot.Step),
+                etag,
+                ifNoneMatch: false,
+                cancellationToken);
+            return;
+        }
+
+        // Migration path: derive the latest step from the thread's step documents and create
+        // the pointer with a conditional write (If-None-Match: *) — two racing first guarded
+        // puts cannot both initialize; the loser surfaces checkpoint.conflict (fail closed).
+        var latest = await GetLatestStepFromObjectsAsync(snapshot.ThreadId, cancellationToken);
+        if (latest != expected)
+        {
+            throw Conflict(snapshot, expected, latest);
+        }
+
+        await PutPointerAsync(
+            pointerKey,
+            Math.Max(expected, snapshot.Step),
+            etag: null,
+            ifNoneMatch: true,
+            cancellationToken);
+    }
+
+    /// <summary>Reads the pointer's step, or <see langword="null" /> when absent/unparseable.</summary>
+    private async Task<long?> GetPointerStepAsync(string pointerKey, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var pointer = await client.GetObjectAsync(
+                new GetObjectRequest { BucketName = bucket, Key = pointerKey },
+                cancellationToken);
+            using var reader = new StreamReader(pointer.ResponseStream, System.Text.Encoding.UTF8);
+            var body = await reader.ReadToEndAsync(cancellationToken);
+            return long.TryParse(body.Trim(), out var parsed) ? parsed : null;
+        }
+        catch (AmazonS3Exception exception) when (exception.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+    }
+
+    private async Task PutPointerAsync(
+        string pointerKey,
+        long step,
+        string? etag,
+        bool ifNoneMatch,
+        CancellationToken cancellationToken)
+    {
+        var request = new PutObjectRequest
+        {
+            BucketName = bucket,
+            Key = pointerKey,
+            ContentBody = step.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            ContentType = "text/plain",
+        };
+        if (etag is not null)
+        {
+            request.IfMatch = etag;
+        }
+
+        if (ifNoneMatch)
+        {
+            // Conditional create: fail with 412 when the pointer object already exists.
+            request.IfNoneMatch = "*";
+        }
+
+        try
+        {
+            await client.PutObjectAsync(request, cancellationToken);
+        }
+        catch (AmazonS3Exception exception) when (exception.StatusCode == HttpStatusCode.PreconditionFailed)
+        {
+            throw new CheckpointStoreException(
+                VolutaErrorCodes.CheckpointConflict,
+                $"Checkpoint put for thread '{request.Key}' lost a concurrency race: " +
+                "the latest-step pointer changed before the conditional write landed.");
+        }
+    }
+
+    private async Task<long?> GetLatestStepFromObjectsAsync(
+        string threadId,
+        CancellationToken cancellationToken)
+    {
+        var keys = await S3CheckpointListing.ListKeysAsync(
+            client,
+            bucket,
+            S3CheckpointKeys.ThreadPrefix(options.KeyPrefix, threadId),
+            cancellationToken);
+
+        long? latest = null;
+        foreach (var key in keys)
+        {
+            if (S3CheckpointKeys.TryParseStep(key, out var step)
+                && (latest is null || step > latest.Value))
+            {
+                latest = step;
+            }
+        }
+
+        return latest;
+    }
+
+    private static CheckpointStoreException Conflict(
+        CheckpointSnapshot snapshot,
+        long expected,
+        long? actual)
+    {
+        return new CheckpointStoreException(
+            VolutaErrorCodes.CheckpointConflict,
+            $"Checkpoint put for thread '{snapshot.ThreadId}' step {snapshot.Step} lost a " +
+            $"concurrency race: expected parent step {expected}, " +
+            $"latest step {(actual is null ? "<none>" : actual.Value.ToString())}.");
     }
 
     /// <inheritdoc />

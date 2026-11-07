@@ -87,8 +87,10 @@ public static class VolutaUiEndpointRouteBuilderExtensions
 
         endpoints.MapGet(
             $"{prefix}/api/topology",
-            (VolutaUiSession session) =>
-                Results.Json(VolutaUiJson.ToWire(session.Topology), JsonSerializerOptions.Web));
+            async (VolutaUiSession session, CancellationToken cancellationToken) =>
+                Results.Json(
+                    VolutaUiJson.ToWire(await session.GetTopologyAsync(cancellationToken)),
+                    JsonSerializerOptions.Web));
 
         endpoints.MapGet(
             $"{prefix}/api/hitl",

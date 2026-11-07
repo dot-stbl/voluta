@@ -18,7 +18,7 @@
         <NoWarn>$(NoWarn);CS1591</NoWarn>
 
         <!-- OSS metadata — applied to every produced package. -->
-        <Version>0.4.0</Version>
+        <Version>0.5.0</Version>
         <PackageLicenseExpression>MIT</PackageLicenseExpression>
         <Authors>Voluta contributors</Authors>
         <PackageProjectUrl>https://github.com/dot-stbl/voluta</PackageProjectUrl>
@@ -59,9 +59,10 @@
         <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
     </PropertyGroup>
 
-    <!-- Source-link + deterministic builds. -->
+    <!-- Source-link + deterministic builds. 10.x line: CVE-2026-62900
+         (GHSA-23fw-v26w-5fgq) — 8.0.0 pins vulnerable Microsoft.Build.Tasks.Git. -->
     <ItemGroup>
-        <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0">
+        <PackageReference Include="Microsoft.SourceLink.GitHub" Version="10.0.403">
             <PrivateAssets>all</PrivateAssets>
             <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
         </PackageReference>

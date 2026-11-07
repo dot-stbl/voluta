@@ -7,16 +7,111 @@ namespace Voluta.Checkpoints.Redis;
 /// </summary>
 internal sealed class RedisCheckpointStore(IConnectionMultiplexer multiplexer, int database) : IRedisCheckpointStore
 {
+    /// <summary>
+    ///     Guarded put CAS (one atomic script, so no interleaving writer can slip between check
+    ///     and write). ARGV: snapshot step, new head step, json, expected head step, expected
+    ///     head token ('' = legacy capture without a marker), new head token. Verifies the head
+    ///     marker still matches the writer's captured view (legacy: marker absent + sorted-set
+    ///     latest equals the expected step), then writes the member and the marker together.
+    ///     Returns 1 on write, 0 on CAS loss.
+    /// </summary>
+    private const string GuardedPutLua =
+        """
+        local hstep = redis.call('HGET', KEYS[2], 'step')
+        local htoken = redis.call('HGET', KEYS[2], 'token')
+        if ARGV[5] ~= '' then
+            if hstep == false or htoken == false or hstep ~= ARGV[4] or htoken ~= ARGV[5] then
+                return 0
+            end
+        else
+            if hstep ~= false then
+                return 0
+            end
+            local latest = redis.call('ZRANGE', KEYS[1], -1, -1, 'WITHSCORES')
+            if latest[1] == false or tonumber(latest[2]) ~= tonumber(ARGV[4]) then
+                return 0
+            end
+        end
+        redis.call('HSET', KEYS[2], 'step', ARGV[2], 'token', ARGV[6])
+        redis.call('ZREMRANGEBYSCORE', KEYS[1], ARGV[1], ARGV[1])
+        redis.call('ZADD', KEYS[1], ARGV[1], ARGV[3])
+        return 1
+        """;
+
+    /// <summary>
+    ///     Blind put (one atomic script): unconditional member upsert; when a head marker
+    ///     exists and the step advances it, the marker is refreshed with the new token.
+    ///     ARGV: step, json, new token.
+    /// </summary>
+    private const string BlindPutLua =
+        """
+        redis.call('ZREMRANGEBYSCORE', KEYS[1], ARGV[1], ARGV[1])
+        redis.call('ZADD', KEYS[1], ARGV[1], ARGV[2])
+        local hstep = redis.call('HGET', KEYS[2], 'step')
+        if hstep ~= false and tonumber(hstep) < tonumber(ARGV[1]) then
+            redis.call('HSET', KEYS[2], 'step', ARGV[1], 'token', ARGV[3])
+        end
+        return 1
+        """;
+
     /// <inheritdoc />
-    public async Task PutAsync(string threadKey, long step, string json, CancellationToken cancellationToken)
+    public async Task<RedisCheckpointHead?> HeadAsync(string headKey, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var db = multiplexer.GetDatabase(database);
+        var marker = await db.HashGetAsync(headKey, [new RedisValue("step"), new RedisValue("token")]);
+        return marker.Length == 2
+               && marker[0].HasValue
+               && marker[1].HasValue
+               && long.TryParse((string?)marker[0], out var step)
+            ? new RedisCheckpointHead(step, marker[1].ToString())
+            : null;
+    }
 
-        // Same-step re-puts replace the previous member: drop leftovers first so the
-        // sorted set never holds two documents for one step.
-        await db.SortedSetRemoveRangeByScoreAsync(threadKey, step, step);
-        await db.SortedSetAddAsync(threadKey, json, step);
+    /// <inheritdoc />
+    public async Task BlindPutAsync(
+        string threadKey,
+        string headKey,
+        long step,
+        string json,
+        string newToken,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var db = multiplexer.GetDatabase(database);
+        await db.ScriptEvaluateAsync(
+            BlindPutLua,
+            [(RedisKey)threadKey, (RedisKey)headKey],
+            new RedisValue[] { step, json, newToken });
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> GuardedPutAsync(
+        string threadKey,
+        string headKey,
+        long step,
+        long newHeadStep,
+        string json,
+        long expectedStep,
+        string? expectedToken,
+        string newToken,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var db = multiplexer.GetDatabase(database);
+        var result = await db.ScriptEvaluateAsync(
+            GuardedPutLua,
+            [(RedisKey)threadKey, (RedisKey)headKey],
+            new RedisValue[]
+            {
+                step,
+                newHeadStep,
+                json,
+                expectedStep,
+                expectedToken ?? string.Empty,
+                newToken,
+            });
+        return (int)result == 1;
     }
 
     /// <inheritdoc />

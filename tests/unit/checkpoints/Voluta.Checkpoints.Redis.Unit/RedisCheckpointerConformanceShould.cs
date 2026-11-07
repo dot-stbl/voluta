@@ -1,12 +1,19 @@
 using Shouldly;
 using Voluta.Abstractions.Checkpoint;
 using Voluta.Abstractions.Runtime;
+using Voluta.Testing.Conformance;
 using Xunit;
 
 namespace Voluta.Checkpoints.Redis.Unit;
 
 public sealed class RedisCheckpointerConformanceShould
 {
+    [Fact(DisplayName = "Given Redis checkpointer over the in-memory store, when conformance suite runs, then all mandatory scenarios pass")]
+    public async Task PassesConformance()
+    {
+        await CheckpointerConformance.RunAllAsync(CreateCheckpointer());
+    }
+
     [Fact(DisplayName = "Given puts across steps, when Get, then latest step returns")]
     public async Task GetReturnsLatestStep()
     {

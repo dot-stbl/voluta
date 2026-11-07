@@ -2,6 +2,7 @@ using System.Text.Json;
 using StackExchange.Redis;
 using Voluta.Abstractions.Checkpoint;
 using Voluta.Abstractions.Diagnostics;
+using Voluta.Abstractions.Runtime;
 using Voluta.Checkpoints.Redis.Wire;
 
 namespace Voluta.Checkpoints.Redis;
@@ -10,7 +11,9 @@ namespace Voluta.Checkpoints.Redis;
 ///     Redis checkpointer: one sorted set per thread (score = step, member = wire JSON).
 /// </summary>
 /// <remarks>
-///     Key layout: <c>{prefix}thread:{safeThreadId}</c>.
+///     Key layout: <c>{prefix}thread:{safeThreadId}</c> (checkpoints, score = step) and
+///     <c>{prefix}head:{safeThreadId}</c> (guarded-put head marker; never surfaced by
+///     thread discovery).
 ///     Host registration: <c>v.Checkpoints.UseRedis(configure)</c> — requires
 ///     <see cref="IConnectionMultiplexer" /> registered in DI.
 ///     Direct construction is internal for conformance / unit tests only.
@@ -45,17 +48,61 @@ public sealed class RedisCheckpointer : ICheckpointer, IThreadDiscovery
     }
 
     /// <inheritdoc />
-    public async Task PutAsync(CheckpointSnapshot snapshot, CancellationToken cancellationToken = default)
+    /// <remarks>
+    ///     Blind write: unconditional sorted-set upsert (last write wins per step) — the
+    ///     shipped 0.4.0 behavior. When a head marker already exists and the step advances it,
+    ///     the marker is refreshed; marker-less threads stay marker-less.
+    ///     <para>
+    ///         RS0027: the guarded 4-parameter override deliberately takes ALL parameters as
+    ///         required (no optional-parameter shadowing of this shipped form), so this shipped
+    ///         overload is no longer the widest.
+    ///     </para>
+    /// </remarks>
+    [global::System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "ApiDesign",
+        "RS0027: API with optional parameter(s) should have the most parameters amongst its public overloads",
+        Justification = "Shipped blind put is frozen; the guarded override takes all parameters as required.")]
+    [global::System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "ApiDesign",
+        "RS0027: API with optional parameter(s) should have the most parameters amongst its public overloads",
+        Justification = "Shipped blind put is frozen; the guarded override takes all parameters as required.")]
+    public Task PutAsync(
+        CheckpointSnapshot snapshot,
+        CancellationToken cancellationToken = default)
+    {
+        return PutAsync(snapshot, expectedParentStep: null, unitOfWork: null, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    ///     Guarded put: the thread's head marker (step + provider-local opaque token) is
+    ///     captured before the write, then the CAS compare-and-write — including the snapshot
+    ///     member and the marker — runs in one atomic Lua script. A competing guarded put that
+    ///     captured the same head loses with <c>checkpoint.conflict</c>, including same-step
+    ///     rewrites. Threads without a marker derive the baseline from the sorted set and
+    ///     create the marker on the first guarded commit (once-per-thread migration).
+    /// </remarks>
+    public async Task PutAsync(
+        CheckpointSnapshot snapshot,
+        long? expectedParentStep,
+        ICheckpointUnitOfWork? unitOfWork,
+        CancellationToken cancellationToken)
     {
         try
         {
             var document = RedisCheckpointDocument.FromSnapshot(snapshot);
             var json = JsonSerializer.Serialize(document, JsonSerializerOptions.Web);
-            await store.PutAsync(
-                RedisCheckpointKeys.ThreadKey(options.KeyPrefix, snapshot.ThreadId),
-                snapshot.Step,
-                json,
-                cancellationToken);
+            if (unitOfWork is not null)
+            {
+                // Transactional participation: the host owns the commit boundary — route the
+                // write through its unit of work (explicit handoff, no ambient flow).
+                await unitOfWork.ExecuteAsync(
+                    token => PutCoreAsync(snapshot, json, expectedParentStep, token),
+                    CancellationToken.None);
+                return;
+            }
+
+            await PutCoreAsync(snapshot, json, expectedParentStep, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException
                                           and not CheckpointStoreException)
@@ -64,6 +111,80 @@ public sealed class RedisCheckpointer : ICheckpointer, IThreadDiscovery
                 VolutaErrorCodes.CheckpointPutFailed,
                 $"Failed to put checkpoint for thread '{snapshot.ThreadId}' step {snapshot.Step}.",
                 exception);
+        }
+    }
+
+    private async Task PutCoreAsync(
+        CheckpointSnapshot snapshot,
+        string json,
+        long? expectedParentStep,
+        CancellationToken cancellationToken)
+    {
+        var threadKey = RedisCheckpointKeys.ThreadKey(options.KeyPrefix, snapshot.ThreadId);
+        var headKey = RedisCheckpointKeys.HeadKey(options.KeyPrefix, snapshot.ThreadId);
+        if (expectedParentStep is not { } expected)
+        {
+            await store.BlindPutAsync(
+                threadKey,
+                headKey,
+                snapshot.Step,
+                json,
+                Guid.NewGuid().ToString("N"),
+                cancellationToken);
+            return;
+        }
+
+        // Capture the writer's view before the CAS script: the script re-verifies the marker
+        // still matches, so a competing guarded put that captured the same head loses.
+        var head = await store.HeadAsync(headKey, cancellationToken);
+        long expectedStep;
+        string? expectedToken;
+        if (head is { } marker)
+        {
+            expectedStep = marker.Step;
+            expectedToken = marker.Token;
+        }
+        else
+        {
+            // Legacy thread (no marker yet): baseline from the sorted set.
+            var latest = await store.LatestAsync(threadKey, cancellationToken);
+            if (latest is null)
+            {
+                throw new CheckpointStoreException(
+                    VolutaErrorCodes.CheckpointConflict,
+                    $"Checkpoint put for thread '{snapshot.ThreadId}' step {snapshot.Step} lost a " +
+                    $"concurrency race: expected parent step {expected}, latest step <none>.");
+            }
+
+            expectedStep = latest.Value.Step;
+            expectedToken = null;
+        }
+
+        if (expectedStep != expected)
+        {
+            throw new CheckpointStoreException(
+                VolutaErrorCodes.CheckpointConflict,
+                $"Checkpoint put for thread '{snapshot.ThreadId}' step {snapshot.Step} lost a " +
+                $"concurrency race: expected parent step {expected}, latest step {expectedStep}.");
+        }
+
+        var written = await store.GuardedPutAsync(
+            threadKey,
+            headKey,
+            snapshot.Step,
+            Math.Max(expectedStep, snapshot.Step),
+            json,
+            expectedStep,
+            expectedToken,
+            Guid.NewGuid().ToString("N"),
+            cancellationToken);
+        if (!written)
+        {
+            throw new CheckpointStoreException(
+                VolutaErrorCodes.CheckpointConflict,
+                $"Checkpoint put for thread '{snapshot.ThreadId}' step {snapshot.Step} lost a " +
+                $"concurrency race: expected parent step {expected} no longer matches " +
+                "the thread's head.");
         }
     }
 

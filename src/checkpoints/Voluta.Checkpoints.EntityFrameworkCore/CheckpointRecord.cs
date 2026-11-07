@@ -18,6 +18,17 @@ public sealed class CheckpointRecord
     /// <summary>Run status at this step.</summary>
     public GraphRunStatus Status { get; set; }
 
-    /// <summary>Full C-shape snapshot (EF converts to/from JSON column).</summary>
+    /// <summary>
+    ///     Full C-shape snapshot (EF converts to/from JSON column).
+    /// </summary>
     public required CheckpointSnapshot Snapshot { get; set; }
+
+    /// <summary>
+    ///     Application-managed concurrency token for guarded puts (same-step rewrite races fail
+    ///     as <see cref="CheckpointStoreException" /> code <c>checkpoint.conflict</c>).
+    ///     Provider-agnostic by design: store-generated tokens (rowversion / <c>xmin</c>) are not
+    ///     produced by portable test backends (SQLite in-memory, EF InMemory). Existing stores
+    ///     need a column addition when upgrading to 0.5.0.
+    /// </summary>
+    public long ConcurrencyToken { get; set; }
 }

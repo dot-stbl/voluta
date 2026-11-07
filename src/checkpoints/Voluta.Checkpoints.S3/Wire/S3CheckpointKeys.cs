@@ -40,6 +40,16 @@ internal static class S3CheckpointKeys
     }
 
     /// <summary>
+    ///     Key of the per-thread latest-step pointer document used by guarded puts.
+    ///     The stem is not numeric, so step-document enumeration (<see cref="TryParseStep" />)
+    ///     ignores it.
+    /// </summary>
+    public static string PointerKey(string? keyPrefix, string threadId)
+    {
+        return ThreadPrefix(keyPrefix, threadId) + "latest.json";
+    }
+
+    /// <summary>
     ///     Prefix used when listing all threads (trailing slash when a key prefix is set).
     /// </summary>
     public static string RootPrefix(string? keyPrefix)

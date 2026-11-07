@@ -47,7 +47,7 @@ var graph = new StateGraph()
     .AddEdge("notify", GraphConstants.End)
     .Compile(checkpointer, new CompileOptions { RecursionLimit = 32 });
 
-var session = new VolutaUiSession(graph, checkpointer);
+var session = new VolutaUiSession(new SingleGraphResolver(graph), checkpointer);
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddVolutaUI(session);

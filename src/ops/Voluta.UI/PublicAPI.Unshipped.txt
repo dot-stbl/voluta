@@ -38,3 +38,7 @@ Voluta.UI.VolutaUiSession.GetHistoryAsync(string! threadId, System.Threading.Can
 Voluta.UI.VolutaUiSession.GetStateAsync(string! threadId, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Voluta.Abstractions.Checkpoint.ThreadSnapshot?>!
 Voluta.UI.VolutaUiSession.StreamContinueAsync(string! threadId, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Collections.Generic.IAsyncEnumerable<Voluta.Abstractions.Streaming.StreamEvent!>!
 Voluta.UI.VolutaUiSession.UpdateStateAsync(string! threadId, System.Collections.Generic.IEnumerable<Voluta.Abstractions.Channels.ChannelWrite!>! writes, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Voluta.Abstractions.Checkpoint.ThreadSnapshot!>!
+
+Voluta.UI.VolutaUiSession.CancelAsync(string! threadId, string? reason = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Voluta.Abstractions.Checkpoint.ThreadSnapshot!>!
+Voluta.UI.VolutaUiSession.GetTopologyAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Voluta.Abstractions.Topology.GraphDescription!>!
+Voluta.UI.VolutaUiSession.VolutaUiSession(Voluta.Graph.IGraphResolver! graphs, Voluta.Abstractions.Checkpoint.ICheckpointer! checkpointer) -> void

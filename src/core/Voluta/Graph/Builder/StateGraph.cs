@@ -240,6 +240,8 @@ public sealed class StateGraph
                 conditionalEdges,
                 StringComparer.Ordinal),
             options.RecursionLimit,
+            options.GraphId,
+            options.GraphVersion,
             options.Services);
 
         return new CompiledGraph(topology, checkpointer);

@@ -28,7 +28,7 @@ public sealed class VolutaUiSessionThreadDiscoveryShould
                 LastNode = "review",
             });
 
-        var session = new VolutaUiSession(BuildGraph(checkpointer), checkpointer);
+        var session = new VolutaUiSession(new SingleGraphResolver(BuildGraph(checkpointer)), checkpointer);
 
         var threads = await session.ListThreadsAsync();
 
@@ -52,7 +52,7 @@ public sealed class VolutaUiSessionThreadDiscoveryShould
                 Status = GraphRunStatus.Running,
             });
 
-        var session = new VolutaUiSession(BuildGraph(checkpointer), checkpointer);
+        var session = new VolutaUiSession(new SingleGraphResolver(BuildGraph(checkpointer)), checkpointer);
         session.TrackThread("tracked-only");
 
         var threads = await session.ListThreadsAsync();

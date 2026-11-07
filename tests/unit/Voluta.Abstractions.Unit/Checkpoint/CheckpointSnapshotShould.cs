@@ -25,6 +25,34 @@ public sealed class CheckpointSnapshotShould
         snapshot.InterruptPayload.ShouldBeNull();
     }
 
+    [Fact(DisplayName = "Given an empty snapshot, when constructed, then additive v1 fields default to null")]
+    public void DefaultAdditiveIdentityAndCancelFieldsToNull()
+    {
+        var snapshot = new CheckpointSnapshot { ThreadId = "thread-1" };
+
+        snapshot.GraphId.ShouldBeNull();
+        snapshot.GraphVersion.ShouldBeNull();
+        snapshot.CancelReason.ShouldBeNull();
+        snapshot.FormatVersion.ShouldBe(1);
+    }
+
+    [Fact(DisplayName = "Given graph identity and cancel reason, when set, then fields are init-only preserved")]
+    public void PreserveAdditiveIdentityAndCancelFields()
+    {
+        var snapshot = new CheckpointSnapshot
+        {
+            ThreadId = "thread-9",
+            Status = GraphRunStatus.Cancelled,
+            GraphId = "comuki-graph",
+            GraphVersion = "2026.11.0",
+            CancelReason = "operator requested",
+        };
+
+        snapshot.GraphId.ShouldBe("comuki-graph");
+        snapshot.GraphVersion.ShouldBe("2026.11.0");
+        snapshot.CancelReason.ShouldBe("operator requested");
+    }
+
     [Fact(DisplayName = "Given full C-shape fields, when constructed, then all fields roundtrip by identity")]
     public void PreserveFullCShapeFields()
     {

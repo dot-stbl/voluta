@@ -16,4 +16,18 @@ public sealed class CompileOptions
     ///     <see cref="GraphContext.GetRequiredService{T}" />.
     /// </summary>
     public IServiceProvider? Services { get; init; }
+
+    /// <summary>
+    ///     Host-assigned identity of this graph. Stamped onto every checkpoint snapshot the
+    ///     compiled graph's runs write; resume / continue validate a snapshot's identity pair
+    ///     against it (legacy snapshots without identity resume unchecked). Null — the graph is
+    ///     anonymous (no identity fields on its snapshots).
+    /// </summary>
+    public string? GraphId { get; init; }
+
+    /// <summary>
+    ///     Host-assigned version paired with <see cref="GraphId" />. The runtime only compares
+    ///     pairs for equality — any host versioning scheme (SemVer, monotonic ints, git sha) fits.
+    /// </summary>
+    public string? GraphVersion { get; init; }
 }

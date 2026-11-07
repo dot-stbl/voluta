@@ -3,6 +3,7 @@ using Voluta.Abstractions.Checkpoint;
 using Voluta.Abstractions.Runtime;
 using Voluta.Abstractions.Streaming;
 using Voluta.Abstractions.Topology;
+using Voluta.Exceptions.Run;
 using Voluta.Runtime.Engine;
 using Voluta.Runtime.Engine.Support;
 
@@ -58,6 +59,17 @@ public sealed class CompiledGraph
     }
 
     /// <summary>
+    ///     Host-assigned graph identifier from compile options (null for anonymous graphs).
+    ///     Stamped onto every snapshot this graph's runs write and validated on resume / continue.
+    /// </summary>
+    public string? GraphId => topology.GraphId;
+
+    /// <summary>
+    ///     Host-assigned graph version paired with <see cref="GraphId" /> (null for anonymous graphs).
+    /// </summary>
+    public string? GraphVersion => topology.GraphVersion;
+
+    /// <summary>
     ///     Streams multi-mode observation items until the run reaches a terminal status.
     /// </summary>
     /// <param name="input">Initial channel writes (seed).</param>
@@ -104,6 +116,35 @@ public sealed class CompiledGraph
     }
 
     /// <summary>
+    ///     Resumes an interrupted thread with a command, carrying host run options (stream mode,
+    ///     optional unit of work for transactional checkpoint commits). Existing overloads keep
+    ///     their behavior (no unit of work — standalone puts).
+    /// </summary>
+    /// <param name="threadId">Thread identifier.</param>
+    /// <param name="command">Resume payload / values.</param>
+    /// <param name="options">Run options (ThreadId is taken from <paramref name="threadId" />).</param>
+    /// <param name="cancellationToken">Cooperative cancellation.</param>
+    /// <returns>Async sequence continuing from the interrupted checkpoint.</returns>
+    public IAsyncEnumerable<StreamEvent> ResumeAsync(
+        string threadId,
+        Command command,
+        RunOptions options,
+        CancellationToken cancellationToken)
+    {
+        var engine = new RunEngine(topology, checkpointer);
+        return engine.ResumeAsync(
+            threadId,
+            command,
+            new RunOptions
+            {
+                ThreadId = threadId,
+                StreamMode = options.StreamMode,
+                UnitOfWork = options.UnitOfWork,
+            },
+            cancellationToken);
+    }
+
+    /// <summary>
     ///     Resumes an interrupted thread with a command and stream mode.
     /// </summary>
     /// <param name="threadId">Thread identifier.</param>
@@ -111,6 +152,15 @@ public sealed class CompiledGraph
     /// <param name="streamMode">Observation mode for the resumed stream.</param>
     /// <param name="cancellationToken">Cooperative cancellation.</param>
     /// <returns>Async sequence continuing from the interrupted checkpoint.</returns>
+    /// <remarks>
+    ///     RS0027: the <see cref="ResumeAsync(string, Command, RunOptions, CancellationToken)" />
+    ///     overload keeps <paramref name="cancellationToken" /> required (no optional-parameter
+    ///     overload may shadow it), so this shipped overload is no longer the widest one.
+    /// </remarks>
+    [global::System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "ApiDesign",
+        "RS0027: API with optional parameter(s) should have the most parameters amongst its public overloads",
+        Justification = "RunOptions overloads intentionally require the CancellationToken.")]
     public IAsyncEnumerable<StreamEvent> ResumeAsync(
         string threadId,
         Command command,
@@ -192,7 +242,8 @@ public sealed class CompiledGraph
     /// <summary>
     ///     Applies channel writes to the latest checkpoint and puts a new history step.
     ///     Uses channel reducers (LastValue / Append). Failed/Cancelled become Running
-    ///     so <see cref="ContinueAsync" /> can re-drive; Interrupted stays Interrupted
+    ///     so <see cref="ContinueAsync(string, Voluta.Abstractions.Streaming.StreamMode, System.Threading.CancellationToken)" />
+    ///     can re-drive; Interrupted stays Interrupted
     ///     (resume via <see cref="ResumeInvokeAsync" />); Done stays Done.
     /// </summary>
     /// <param name="threadId">Thread identifier.</param>
@@ -220,6 +271,11 @@ public sealed class CompiledGraph
     ///     <paramref name="sourceThreadId" /> onto <paramref name="newThreadId" />,
     ///     keeping the same step index as the fork root.
     ///     Source thread is unchanged. Requires list-capable checkpointer.
+    ///     Host-initiated put outside a run, guarded like <see cref="UpdateStateAsync" />:
+    ///     when the destination thread already has history the put carries its latest step as
+    ///     the expected parent, so a competing fork or run write on that thread fails with
+    ///     <c>checkpoint.conflict</c> instead of silently overwriting; a fresh destination
+    ///     keeps the blind first write.
     /// </summary>
     /// <param name="sourceThreadId">Thread to copy from.</param>
     /// <param name="step">History step to copy.</param>
@@ -228,6 +284,10 @@ public sealed class CompiledGraph
     /// <returns>Host-facing snapshot on the new thread.</returns>
     /// <exception cref="Exceptions.Run.GraphThreadNotFoundException">Source has no history.</exception>
     /// <exception cref="Exceptions.Run.GraphStepNotFoundException">Step missing on source.</exception>
+    /// <exception cref="Voluta.Abstractions.Checkpoint.CheckpointStoreException">
+    ///     Code <c>checkpoint.conflict</c> — the destination thread moved under the fork
+    ///     (guarded put lost the concurrency race).
+    /// </exception>
     public Task<ThreadSnapshot> ForkAsync(
         string sourceThreadId,
         long step,
@@ -255,6 +315,15 @@ public sealed class CompiledGraph
     /// <param name="streamMode">Observation mode.</param>
     /// <param name="cancellationToken">Cooperative cancellation.</param>
     /// <returns>Async sequence continuing the run.</returns>
+    /// <remarks>
+    ///     RS0027: the <see cref="ContinueAsync(string, RunOptions, CancellationToken)" />
+    ///     overload keeps <paramref name="cancellationToken" /> required (no optional-parameter
+    ///     overload may shadow it), so this shipped overload is no longer the widest one.
+    /// </remarks>
+    [global::System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "ApiDesign",
+        "RS0027: API with optional parameter(s) should have the most parameters amongst its public overloads",
+        Justification = "RunOptions overloads intentionally require the CancellationToken.")]
     public IAsyncEnumerable<StreamEvent> ContinueAsync(
         string threadId,
         StreamMode streamMode = StreamMode.Updates,
@@ -266,7 +335,35 @@ public sealed class CompiledGraph
     }
 
     /// <summary>
-    ///     Drains <see cref="ContinueAsync" /> to the next terminal event.
+    ///     Continues a Running thread from the latest checkpoint carrying host run options
+    ///     (stream mode, optional unit of work). Existing overloads keep their behavior.
+    /// </summary>
+    /// <param name="threadId">Thread identifier.</param>
+    /// <param name="options">Run options (ThreadId is taken from <paramref name="threadId" />).</param>
+    /// <param name="cancellationToken">Cooperative cancellation.</param>
+    /// <returns>Async sequence continuing the run.</returns>
+    public IAsyncEnumerable<StreamEvent> ContinueAsync(
+        string threadId,
+        RunOptions options,
+        CancellationToken cancellationToken)
+    {
+        return string.IsNullOrWhiteSpace(threadId)
+            ? throw new ArgumentException("Thread id is required.", nameof(threadId))
+            : new RunEngine(topology, checkpointer).ContinueAsync(
+                threadId,
+                new RunOptions
+                {
+                    ThreadId = threadId,
+                    StreamMode = options.StreamMode,
+                    UnitOfWork = options.UnitOfWork,
+                },
+                cancellationToken);
+    }
+
+    /// <summary>
+    ///     Drains
+    ///     <see cref="ContinueAsync(string, Voluta.Abstractions.Streaming.StreamMode, System.Threading.CancellationToken)" />
+    ///     to the next terminal event.
     /// </summary>
     /// <param name="threadId">Thread identifier.</param>
     /// <param name="cancellationToken">Cooperative cancellation.</param>
@@ -278,6 +375,83 @@ public sealed class CompiledGraph
         return await DrainToTerminalAsync(
             ContinueAsync(threadId, StreamMode.Updates, cancellationToken),
             StreamMode.Updates);
+    }
+
+    /// <summary>
+    ///     Cancels a parked thread out-of-band by writing a <see cref="GraphRunStatus.Cancelled" />
+    ///     snapshot from the thread's last state via a guarded put (expected parent step = the
+    ///     thread's latest step; reason recorded in <see cref="CheckpointSnapshot.CancelReason" />).
+    /// </summary>
+    /// <param name="threadId">Thread identifier.</param>
+    /// <param name="reason">Optional host-supplied cancel reason (stored on the snapshot).</param>
+    /// <param name="cancellationToken">Cooperative cancellation.</param>
+    /// <returns>The host-facing snapshot recorded for the cancellation.</returns>
+    /// <exception cref="Exceptions.Run.GraphThreadNotFoundException">Thread never checkpointed.</exception>
+    /// <exception cref="Exceptions.Run.GraphInvalidCancelException">
+    ///     Latest snapshot is Done / Failed (terminal) — cancellation is not applicable.
+    /// </exception>
+    /// <remarks>
+    ///     <para>
+    ///         Cancelling an already-Cancelled thread succeeds idempotently (no duplicate write).
+    ///         Allowed origin statuses: Running and Interrupted (a thread parked mid-run or left
+    ///         Running by a dead process).
+    ///     </para>
+    ///     <para>
+    ///         <strong>Live streams are NOT killed by this call.</strong> A run currently streaming
+    ///         in this process terminates only via its own cancellation token. That live run's next
+    ///         guarded checkpoint put loses the durable race with this cancel and fails with
+    ///         <c>checkpoint.conflict</c> — the parked-cancel is the durable winner.
+    ///     </para>
+    /// </remarks>
+    public async Task<ThreadSnapshot> CancelAsync(
+        string threadId,
+        string? reason = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(threadId))
+        {
+            throw new ArgumentException("Thread id is required.", nameof(threadId));
+        }
+
+        var loaded = await checkpointer.GetAsync(threadId, cancellationToken)
+                     ?? throw new GraphThreadNotFoundException(
+                         $"No checkpoint found for thread '{threadId}'.");
+
+        switch (loaded.Status)
+        {
+            case GraphRunStatus.Cancelled:
+                // Idempotent: already cancelled — no duplicate snapshot.
+                return ThreadSnapshotMapping.FromSnapshot(loaded);
+            case GraphRunStatus.Done:
+            case GraphRunStatus.Failed:
+                throw new GraphInvalidCancelException(
+                    $"Thread '{threadId}' is {loaded.Status} and cannot be cancelled.");
+        }
+
+        var cancelled = new CheckpointSnapshot
+        {
+            FormatVersion = loaded.FormatVersion,
+            ThreadId = loaded.ThreadId,
+            Step = loaded.Step,
+            Status = GraphRunStatus.Cancelled,
+            ChannelValues = CheckpointStateMutation.CloneValues(loaded.ChannelValues),
+            ChannelVersions = CheckpointStateMutation.CloneVersions(loaded.ChannelVersions),
+            VersionsSeen = CheckpointStateMutation.CloneVersionsSeen(loaded.VersionsSeen),
+            PendingWrites = [.. loaded.PendingWrites],
+            PendingSends = [.. loaded.PendingSends],
+            LastNode = loaded.LastNode,
+            NextNodes = [.. loaded.NextNodes],
+            InterruptPayload = loaded.InterruptPayload,
+            PendingInterrupts = [.. loaded.PendingInterrupts],
+            GraphId = loaded.GraphId,
+            GraphVersion = loaded.GraphVersion,
+            CancelReason = reason,
+        };
+
+        // Guarded put without a host unit of work (out-of-band host operation): the loaded
+        // step is the expected parent, so a live run's concurrent put loses with conflict.
+        await checkpointer.PutAsync(cancelled, loaded.Step, unitOfWork: null, cancellationToken);
+        return ThreadSnapshotMapping.FromSnapshot(cancelled);
     }
 
     private static async Task<StreamEvent> DrainToTerminalAsync(

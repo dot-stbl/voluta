@@ -16,4 +16,12 @@ public sealed class RunOptions
     ///     Preferred stream observation mode when streaming (default updates).
     /// </summary>
     public StreamMode StreamMode { get; init; } = StreamMode.Updates;
+
+    /// <summary>
+    ///     Optional host unit of work for transactional participation: checkpoint puts of this
+    ///     run enlist in the host's own transaction instead of writing standalone. Explicit
+    ///     per-run handoff — no ambient / <c>AsyncLocal</c> flow. Null (default) keeps the
+    ///     standalone write.
+    /// </summary>
+    public ICheckpointUnitOfWork? UnitOfWork { get; init; }
 }

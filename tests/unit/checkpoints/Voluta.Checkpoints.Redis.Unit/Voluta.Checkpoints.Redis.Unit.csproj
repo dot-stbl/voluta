@@ -6,6 +6,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\..\..\src\checkpoints\Voluta.Checkpoints.Redis\Voluta.Checkpoints.Redis.csproj" />
+    <ProjectReference Include="..\..\..\..\src\devtools\Voluta.Testing\Voluta.Testing.csproj" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.*" />
     <PackageReference Include="xunit" Version="2.9.*" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.*" />
