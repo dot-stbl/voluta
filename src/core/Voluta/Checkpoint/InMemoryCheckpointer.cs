@@ -260,6 +260,14 @@ file static class InMemoryCheckpointClone
             VersionsSeen = versionsSeen,
             PendingWrites = [.. snapshot.PendingWrites],
             PendingSends = [.. snapshot.PendingSends],
+            CompletedTaskIds = [.. snapshot.CompletedTaskIds],
+            TaskAttempts = new Dictionary<string, int>(
+                snapshot.TaskAttempts,
+                StringComparer.Ordinal),
+            JoinArrivals = new Dictionary<string, IReadOnlyList<string>>(
+                snapshot.JoinArrivals,
+                StringComparer.Ordinal),
+            StopReason = snapshot.StopReason,
             LastNode = snapshot.LastNode,
             NextNodes = [.. snapshot.NextNodes],
             InterruptPayload = snapshot.InterruptPayload,

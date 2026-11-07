@@ -1,6 +1,7 @@
 using Voluta.Abstractions.Channels;
 using Voluta.Abstractions.Checkpoint;
 using Voluta.Abstractions.Diagnostics;
+using Voluta.Abstractions.Runtime;
 using Voluta.Abstractions.State;
 using Voluta.Checkpoint;
 using Voluta.Exceptions;
@@ -19,7 +20,10 @@ public sealed class StateGraph
         new(StringComparer.Ordinal);
 
     private readonly Dictionary<string, NodeHandler> nodes = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, NodeOptions> nodeOptions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, List<string>> staticEdges = new(StringComparer.Ordinal);
+    private readonly List<(string[] Sources, string Target)> joinEdges = [];
+    private readonly HashSet<string> joinTargetLookup = new(StringComparer.Ordinal);
 
     /// <summary>
     ///     Registers a named channel with the given merge kind.
@@ -105,6 +109,20 @@ public sealed class StateGraph
     }
 
     /// <summary>
+    ///     Registers a unique node handler with per-node execution options (retry policy).
+    /// </summary>
+    /// <param name="name">Node name (not START/END).</param>
+    /// <param name="handler">Async node body.</param>
+    /// <param name="options">Node options (retry policy); must not be null.</param>
+    /// <returns>This builder for chaining.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="options" /> is null.</exception>
+    public StateGraph AddNode(string name, NodeHandler handler, NodeOptions options)
+    {
+        RegisterNodeOptions(name, options);
+        return AddNode(name, handler);
+    }
+
+    /// <summary>
     ///     Registers a DI-resolved <see cref="IGraphNode" />. The type must be registered in
     ///     <see cref="CompileOptions.Services" /> (or the host provider passed at compile).
     /// </summary>
@@ -124,6 +142,21 @@ public sealed class StateGraph
     }
 
     /// <summary>
+    ///     Registers a DI-resolved <see cref="IGraphNode" /> with per-node execution options (retry policy).
+    /// </summary>
+    /// <typeparam name="TNode">Node implementation type.</typeparam>
+    /// <param name="name">Node name (not START/END).</param>
+    /// <param name="options">Node options (retry policy); must not be null.</param>
+    /// <returns>This builder for chaining.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="options" /> is null.</exception>
+    public StateGraph AddNode<TNode>(string name, NodeOptions options)
+        where TNode : class, IGraphNode
+    {
+        RegisterNodeOptions(name, options);
+        return AddNode<TNode>(name);
+    }
+
+    /// <summary>
     ///     Registers a pre-built <see cref="IGraphNode" /> instance (singleton for the graph lifetime).
     /// </summary>
     /// <param name="name">Node name (not START/END).</param>
@@ -134,6 +167,20 @@ public sealed class StateGraph
         return AddNode(
             name,
             node.InvokeAsync);
+    }
+
+    /// <summary>
+    ///     Registers a pre-built <see cref="IGraphNode" /> instance with per-node execution options (retry policy).
+    /// </summary>
+    /// <param name="name">Node name (not START/END).</param>
+    /// <param name="node">Node implementation.</param>
+    /// <param name="options">Node options (retry policy); must not be null.</param>
+    /// <returns>This builder for chaining.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="options" /> is null.</exception>
+    public StateGraph AddNode(string name, IGraphNode node, NodeOptions options)
+    {
+        RegisterNodeOptions(name, options);
+        return AddNode(name, node);
     }
 
     /// <summary>
@@ -160,6 +207,20 @@ public sealed class StateGraph
     }
 
     /// <summary>
+    ///     Registers a node factory with per-node execution options (retry policy).
+    /// </summary>
+    /// <param name="name">Node name (not START/END).</param>
+    /// <param name="nodeFactory">Factory receiving <see cref="GraphContext.Services" />.</param>
+    /// <param name="options">Node options (retry policy); must not be null.</param>
+    /// <returns>This builder for chaining.</returns>
+    /// <exception cref="ArgumentNullException"><paramref name="options" /> is null.</exception>
+    public StateGraph AddNode(string name, Func<IServiceProvider, IGraphNode> nodeFactory, NodeOptions options)
+    {
+        RegisterNodeOptions(name, options);
+        return AddNode(name, nodeFactory);
+    }
+
+    /// <summary>
     ///     Registers a static edge from source (node or START) to target (node or END).
     /// </summary>
     /// <param name="source">Source node name or <see cref="GraphConstants.Start" />.</param>
@@ -172,6 +233,13 @@ public sealed class StateGraph
             throw new GraphCompileException(VolutaErrorCodes.GraphInvalidEdge, "Edge endpoints must be non-empty.");
         }
 
+        if (joinTargetLookup.Contains(target))
+        {
+            throw new GraphCompileException(
+                VolutaErrorCodes.GraphInvalidEdge,
+                $"Node '{target}' is already a wait-for-all join target — mixed in-edges are ambiguous.");
+        }
+
         if (!staticEdges.TryGetValue(source, out var targets))
         {
             targets = [];
@@ -179,6 +247,94 @@ public sealed class StateGraph
         }
 
         targets.Add(target);
+        return this;
+    }
+
+    /// <summary>
+    ///     Registers a wait-for-all barrier edge: <paramref name="target" /> fires only after
+    ///     ALL <paramref name="sources" /> completed in the current epoch; the barrier reopens
+    ///     after firing (cycle-compatible). The target keeps no other in-edges (mixed in-edges
+    ///     are ambiguous and rejected); sources may keep other outgoing edges.
+    /// </summary>
+    /// <param name="sources">Source node names (no sentinels, no duplicates).</param>
+    /// <param name="target">Target node name (no sentinels; single incoming edge).</param>
+    /// <returns>This builder for chaining.</returns>
+    /// <exception cref="GraphCompileException">
+    ///     Empty/duplicate sources or a conflicting in-edge (<c>graph.invalid_edge</c>).
+    /// </exception>
+    public StateGraph AddEdge(string[] sources, string target)
+    {
+        ArgumentNullException.ThrowIfNull(sources);
+        if (sources.Length == 0)
+        {
+            throw new GraphCompileException(
+                VolutaErrorCodes.GraphInvalidEdge,
+                "Join edge requires at least one source.");
+        }
+
+        if (sources.Distinct(StringComparer.Ordinal).Count() != sources.Length)
+        {
+            throw new GraphCompileException(
+                VolutaErrorCodes.GraphInvalidEdge,
+                "Join edge sources must be distinct.");
+        }
+
+        if (string.IsNullOrWhiteSpace(target))
+        {
+            throw new GraphCompileException(VolutaErrorCodes.GraphInvalidEdge, "Edge endpoints must be non-empty.");
+        }
+
+        // Sentinels reject immediately (the unknown-node check waits for Compile — nodes
+        // may register after edges in fluent usage).
+        foreach (var endpoint in sources)
+        {
+            if (StateGraphValidation.IsSentinel(endpoint))
+            {
+                throw new GraphCompileException(
+                    VolutaErrorCodes.GraphUnknownEndpoint,
+                    $"Join edge endpoint '{endpoint}' is a START/END sentinel — joins connect nodes only.");
+            }
+        }
+
+        if (StateGraphValidation.IsSentinel(target))
+        {
+            throw new GraphCompileException(
+                VolutaErrorCodes.GraphUnknownEndpoint,
+                $"Join edge endpoint '{target}' is a START/END sentinel — joins connect nodes only.");
+        }
+
+        if (joinTargetLookup.Contains(target))
+        {
+            throw new GraphCompileException(
+                VolutaErrorCodes.GraphInvalidEdge,
+                $"Node '{target}' is already a wait-for-all join target.");
+        }
+
+        foreach (var (source, targets) in staticEdges)
+        {
+            if (targets.Contains(target))
+            {
+                throw new GraphCompileException(
+                    VolutaErrorCodes.GraphInvalidEdge,
+                    $"Node '{target}' already has an incoming edge from '{source}' — mixed in-edges are ambiguous.");
+            }
+        }
+
+        string[] sourceCopy = [.. sources];
+        joinEdges.Add((sourceCopy, target));
+        joinTargetLookup.Add(target);
+        foreach (var source in sourceCopy)
+        {
+            // Downstream routing still sees the join target through the source's edge list.
+            if (!staticEdges.TryGetValue(source, out var targets))
+            {
+                targets = [];
+                staticEdges[source] = targets;
+            }
+
+            targets.Add(target);
+        }
+
         return this;
     }
 
@@ -219,6 +375,22 @@ public sealed class StateGraph
     }
 
     /// <summary>
+    ///     Validates and records per-node options (null-check + retry-policy compile check).
+    /// </summary>
+    private void RegisterNodeOptions(string name, NodeOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        if (options.Retry is { MaxAttempts: < 1 })
+        {
+            throw new GraphCompileException(
+                VolutaErrorCodes.GraphInvalidRetryPolicy,
+                $"Node '{name}' retry policy requires at least one attempt (MaxAttempts={options.Retry.MaxAttempts}).");
+        }
+
+        nodeOptions[name] = options;
+    }
+
+    /// <summary>
     ///     Validates topology and returns an immutable compiled graph.
     /// </summary>
     /// <param name="checkpointer">Checkpoint store (typically <see cref="InMemoryCheckpointer" />).</param>
@@ -227,7 +399,32 @@ public sealed class StateGraph
     public CompiledGraph Compile(ICheckpointer checkpointer, CompileOptions? options = null)
     {
         options ??= new CompileOptions();
-        StateGraphValidation.Validate(nodes, staticEdges, conditionalEdges);
+        StateGraphValidation.Validate(nodes, staticEdges, conditionalEdges, joinEdges);
+
+        var nodeRetries = new Dictionary<string, RetryPolicy?>(StringComparer.Ordinal);
+        foreach (var (name, nodeOption) in nodeOptions)
+        {
+            if (nodeOption.Retry is not null)
+            {
+                nodeRetries[name] = nodeOption.Retry;
+            }
+        }
+
+        var joinSources = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+        foreach (var (sources, target) in joinEdges)
+        {
+            joinSources[target] = [.. sources];
+        }
+
+        foreach (var name in options.InterruptBefore)
+        {
+            StateGraphValidation.ValidateKnownNode(nodes, name);
+        }
+
+        foreach (var name in options.InterruptAfter)
+        {
+            StateGraphValidation.ValidateKnownNode(nodes, name);
+        }
 
         var topology = new GraphTopology(
             new Dictionary<string, NodeHandler>(nodes, StringComparer.Ordinal),
@@ -242,7 +439,13 @@ public sealed class StateGraph
             options.RecursionLimit,
             options.GraphId,
             options.GraphVersion,
-            options.Services);
+            options.Services,
+            nodeRetries,
+            joinSources,
+            options.InterruptBefore,
+            options.InterruptAfter,
+            options.RunGuards,
+            options.CheckpointTypes);
 
         return new CompiledGraph(topology, checkpointer);
     }
@@ -256,7 +459,8 @@ file static class StateGraphValidation
     public static void Validate(
         IReadOnlyDictionary<string, NodeHandler> nodes,
         IReadOnlyDictionary<string, List<string>> staticEdges,
-        IReadOnlyDictionary<string, Func<GraphContext, IReadOnlyList<string>>> conditionalEdges)
+        IReadOnlyDictionary<string, Func<GraphContext, IReadOnlyList<string>>> conditionalEdges,
+        IReadOnlyList<(string[] Sources, string Target)> joinEdges)
     {
         if (nodes.Count == 0)
         {
@@ -284,11 +488,59 @@ file static class StateGraphValidation
         {
             ValidateEndpoint(nodes, source, true);
         }
+
+        foreach (var (sources, target) in joinEdges)
+        {
+            foreach (var endpoint in sources)
+            {
+                ValidateJoinEndpoint(nodes, endpoint);
+            }
+
+            ValidateJoinEndpoint(nodes, target);
+        }
     }
 
     public static bool IsSentinel(string name)
     {
         return name is GraphConstants.Start or GraphConstants.End;
+    }
+
+    /// <summary>
+    ///     Join edge endpoint must be a known node (sentinels rejected by the join check).
+    /// </summary>
+    public static void ValidateKnownNode(
+        IReadOnlyDictionary<string, NodeHandler> nodes,
+        string name)
+    {
+        if (!nodes.ContainsKey(name))
+        {
+            throw new GraphCompileException(
+                VolutaErrorCodes.GraphUnknownEndpoint,
+                $"Compile option references unknown node '{name}'.");
+        }
+    }
+
+    /// <summary>
+    ///     Join edges are node-to-node barriers: START/END sentinels and unknown nodes fail
+    ///     with <c>graph.unknown_endpoint</c>.
+    /// </summary>
+    private static void ValidateJoinEndpoint(
+        IReadOnlyDictionary<string, NodeHandler> nodes,
+        string name)
+    {
+        if (IsSentinel(name))
+        {
+            throw new GraphCompileException(
+                VolutaErrorCodes.GraphUnknownEndpoint,
+                $"Join edge endpoint '{name}' is a START/END sentinel — joins connect nodes only.");
+        }
+
+        if (!nodes.ContainsKey(name))
+        {
+            throw new GraphCompileException(
+                VolutaErrorCodes.GraphUnknownEndpoint,
+                $"Join edge references unknown node '{name}'.");
+        }
     }
 
     private static void ValidateEndpoint(

@@ -1,6 +1,7 @@
 using Voluta.Abstractions.Channels;
 using Voluta.Abstractions.Checkpoint;
 using Voluta.Abstractions.Runtime;
+using Voluta.Abstractions.Serialization;
 using Voluta.Abstractions.Streaming;
 using Voluta.Abstractions.Topology;
 using Voluta.Exceptions.Run;
@@ -26,6 +27,16 @@ public sealed class CompiledGraph
     {
         this.topology = topology;
         this.checkpointer = checkpointer;
+
+        // v050 type registry transport: the topology carries CompileOptions.CheckpointTypes;
+        // providers implementing the capability interface receive it here (where the
+        // topology is available — CreateWriter only sees RunOptions). InMemory never
+        // implements the interface → zero behavior change.
+        if (topology.CheckpointTypes is { } registry
+            && checkpointer is IRegistryAwareCheckpointer aware)
+        {
+            aware.TypeRegistry = registry;
+        }
     }
 
     /// <summary>
@@ -439,6 +450,10 @@ public sealed class CompiledGraph
             VersionsSeen = CheckpointStateMutation.CloneVersionsSeen(loaded.VersionsSeen),
             PendingWrites = [.. loaded.PendingWrites],
             PendingSends = [.. loaded.PendingSends],
+            CompletedTaskIds = [.. loaded.CompletedTaskIds],
+            TaskAttempts = CheckpointStateMutation.CloneTaskAttempts(loaded.TaskAttempts),
+            JoinArrivals = CheckpointStateMutation.CloneJoinArrivals(loaded.JoinArrivals),
+            StopReason = loaded.StopReason,
             LastNode = loaded.LastNode,
             NextNodes = [.. loaded.NextNodes],
             InterruptPayload = loaded.InterruptPayload,

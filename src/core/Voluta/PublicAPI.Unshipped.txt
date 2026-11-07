@@ -34,6 +34,7 @@ static readonly Voluta.Diagnostics.VolutaEventIds.GraphInvalidChannel -> Microso
 static readonly Voluta.Diagnostics.VolutaEventIds.GraphInvalidEdge -> Microsoft.Extensions.Logging.EventId
 static readonly Voluta.Diagnostics.VolutaEventIds.GraphInvalidNode -> Microsoft.Extensions.Logging.EventId
 static readonly Voluta.Diagnostics.VolutaEventIds.GraphInvalidContinue -> Microsoft.Extensions.Logging.EventId
+static readonly Voluta.Diagnostics.VolutaEventIds.GraphInvalidRetryPolicy -> Microsoft.Extensions.Logging.EventId
 static readonly Voluta.Diagnostics.VolutaEventIds.GraphInvalidResume -> Microsoft.Extensions.Logging.EventId
 static readonly Voluta.Diagnostics.VolutaEventIds.GraphMissingStart -> Microsoft.Extensions.Logging.EventId
 static readonly Voluta.Diagnostics.VolutaEventIds.GraphNoNodes -> Microsoft.Extensions.Logging.EventId
@@ -118,3 +119,26 @@ Voluta.Graph.Options.CompileOptions.GraphVersion.get -> string?
 Voluta.Graph.Options.CompileOptions.GraphVersion.init -> void
 Voluta.Graph.CompiledGraph.GraphId.get -> string?
 Voluta.Graph.CompiledGraph.GraphVersion.get -> string?
+
+Voluta.Graph.Builder.StateGraph.AddEdge(string![]! sources, string! target) -> Voluta.Graph.Builder.StateGraph!
+Voluta.Graph.Builder.StateGraph.AddNode(string! name, System.Func<System.IServiceProvider!, Voluta.Graph.IGraphNode!>! nodeFactory, Voluta.Graph.Options.NodeOptions! options) -> Voluta.Graph.Builder.StateGraph!
+Voluta.Graph.Builder.StateGraph.AddNode(string! name, Voluta.Graph.IGraphNode! node, Voluta.Graph.Options.NodeOptions! options) -> Voluta.Graph.Builder.StateGraph!
+Voluta.Graph.Builder.StateGraph.AddNode(string! name, Voluta.Graph.Options.NodeHandler! handler, Voluta.Graph.Options.NodeOptions! options) -> Voluta.Graph.Builder.StateGraph!
+Voluta.Graph.Builder.StateGraph.AddNode<TNode>(string! name, Voluta.Graph.Options.NodeOptions! options) -> Voluta.Graph.Builder.StateGraph!
+Voluta.Graph.GraphContext.Attempt.get -> int
+Voluta.Graph.GraphContext.GraphContext(string! nodeName, System.Collections.Generic.IReadOnlyDictionary<string!, object?>! channelValues, object? resumePayload, object? taskPayload, System.IServiceProvider? services, string? threadId, string? taskId, Voluta.Abstractions.Streaming.IStreamWriter? stream, bool isResume, string? resumeKind, int attempt) -> void
+Voluta.Graph.Options.CompileOptions.CheckpointTypes.get -> Voluta.Abstractions.Serialization.CheckpointTypeRegistry?
+Voluta.Graph.Options.CompileOptions.CheckpointTypes.init -> void
+Voluta.Graph.Options.CompileOptions.InterruptAfter.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Voluta.Graph.Options.CompileOptions.InterruptAfter.init -> void
+Voluta.Graph.Options.CompileOptions.InterruptBefore.get -> System.Collections.Generic.IReadOnlyList<string!>!
+Voluta.Graph.Options.CompileOptions.InterruptBefore.init -> void
+Voluta.Graph.Options.CompileOptions.RunGuards.get -> System.Collections.Generic.IReadOnlyList<Voluta.Abstractions.Runtime.IRunGuard!>!
+Voluta.Graph.Options.CompileOptions.RunGuards.init -> void
+static Voluta.Graph.Options.CompileOptions.WithoutRecursionLimit() -> Voluta.Graph.Options.CompileOptions!
+Voluta.Graph.Options.NodeOptions
+Voluta.Graph.Options.NodeOptions.NodeOptions() -> void
+Voluta.Graph.Options.NodeOptions.Retry.get -> Voluta.Abstractions.Runtime.RetryPolicy?
+Voluta.Graph.Options.NodeOptions.Retry.init -> void
+const Voluta.Graph.Options.RecursionLimit.Unlimited = 2147483647 -> int
+Voluta.Graph.Options.RecursionLimit
