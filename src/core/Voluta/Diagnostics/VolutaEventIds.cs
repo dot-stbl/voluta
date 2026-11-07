@@ -45,6 +45,12 @@ public static class VolutaEventIds
     /// <summary><see cref="VolutaErrorCodes.GraphInvalidResume" />.</summary>
     public static readonly EventId GraphInvalidResume = new(2022, VolutaErrorCodes.GraphInvalidResume);
 
+    /// <summary><see cref="VolutaErrorCodes.GraphVersionMismatch" />.</summary>
+    public static readonly EventId GraphVersionMismatch = new(2026, VolutaErrorCodes.GraphVersionMismatch);
+
+    /// <summary><see cref="VolutaErrorCodes.GraphInvalidCancel" />.</summary>
+    public static readonly EventId GraphInvalidCancel = new(2027, VolutaErrorCodes.GraphInvalidCancel);
+
     /// <summary><see cref="VolutaErrorCodes.GraphInvalidContinue" />.</summary>
     public static readonly EventId GraphInvalidContinue = new(2023, VolutaErrorCodes.GraphInvalidContinue);
 
@@ -62,6 +68,9 @@ public static class VolutaEventIds
 
     /// <summary><see cref="VolutaErrorCodes.CheckpointPutFailed" />.</summary>
     public static readonly EventId CheckpointPutFailed = new(2100, VolutaErrorCodes.CheckpointPutFailed);
+
+    /// <summary><see cref="VolutaErrorCodes.CheckpointConflict" />.</summary>
+    public static readonly EventId CheckpointConflict = new(2106, VolutaErrorCodes.CheckpointConflict);
 
     /// <summary><see cref="VolutaErrorCodes.CheckpointGetFailed" />.</summary>
     public static readonly EventId CheckpointGetFailed = new(2101, VolutaErrorCodes.CheckpointGetFailed);
@@ -101,12 +110,15 @@ public static class VolutaEventIds
         GraphOutOfSteps,
         GraphRunFailed,
         GraphInvalidResume,
+        GraphVersionMismatch,
+        GraphInvalidCancel,
         GraphInvalidContinue,
         GraphThreadNotFound,
         GraphStepNotFound,
         ChannelConcurrentUpdate,
         ChannelInvalidWrite,
         CheckpointPutFailed,
+        CheckpointConflict,
         CheckpointGetFailed,
         CheckpointListFailed,
         CheckpointCorruptPayload,

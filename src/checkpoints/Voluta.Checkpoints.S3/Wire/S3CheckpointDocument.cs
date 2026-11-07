@@ -35,6 +35,12 @@ internal sealed class S3CheckpointDocument
 
     public JsonElement? InterruptPayload { get; set; }
 
+    public string? GraphId { get; set; }
+
+    public string? GraphVersion { get; set; }
+
+    public string? CancelReason { get; set; }
+
     public static S3CheckpointDocument FromSnapshot(CheckpointSnapshot snapshot)
     {
         return new S3CheckpointDocument
@@ -83,6 +89,9 @@ internal sealed class S3CheckpointDocument
             LastNode = snapshot.LastNode,
             NextNodes = [.. snapshot.NextNodes],
             InterruptPayload = S3CheckpointJson.ToElement(snapshot.InterruptPayload),
+            GraphId = snapshot.GraphId,
+            GraphVersion = snapshot.GraphVersion,
+            CancelReason = snapshot.CancelReason,
         };
     }
 
@@ -142,6 +151,9 @@ internal sealed class S3CheckpointDocument
             LastNode = LastNode,
             NextNodes = [.. NextNodes],
             InterruptPayload = S3CheckpointJson.FromElement(InterruptPayload),
+            GraphId = GraphId,
+            GraphVersion = GraphVersion,
+            CancelReason = CancelReason,
         };
     }
 }

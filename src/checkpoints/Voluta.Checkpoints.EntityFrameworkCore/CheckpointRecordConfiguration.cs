@@ -56,6 +56,12 @@ internal sealed class CheckpointRecordConfiguration : IEntityTypeConfiguration<C
         builder.Property(static record => record.Snapshot)
             .IsRequired();
 
+        // Application-managed concurrency token (same-step rewrite races →
+        // DbUpdateConcurrencyException → checkpoint.conflict). Not store-generated so the
+        // configuration stays portable across SQLite / InMemory / Postgres.
+        builder.Property(static record => record.ConcurrencyToken)
+            .IsConcurrencyToken();
+
         builder.HasIndex(static record => record.ThreadId);
     }
 }

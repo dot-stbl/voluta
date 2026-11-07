@@ -12,6 +12,7 @@ using Voluta.Abstractions.Results;
 using Voluta.Abstractions.Runtime;
 using Voluta.Abstractions.Streaming;
 using Voluta.Checkpoint;
+using Voluta.Graph;
 using Voluta.Graph.Builder;
 using Voluta.UI;
 using Voluta.UI.Studio;
@@ -340,7 +341,7 @@ public sealed class StudioApiRoutesShould
             .AddEdge("gate", "b")
             .AddEdge("b", GraphConstants.End)
             .Compile(checkpointer);
-        return new VolutaUiSession(graph, checkpointer);
+        return new VolutaUiSession(new SingleGraphResolver(graph), checkpointer);
     }
 
     private static async Task DrainAsync(IAsyncEnumerable<StreamEvent> stream)

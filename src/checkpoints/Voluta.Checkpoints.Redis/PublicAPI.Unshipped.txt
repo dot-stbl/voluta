@@ -1,1 +1,3 @@
 #nullable enable
+
+Voluta.Checkpoints.Redis.RedisCheckpointer.PutAsync(Voluta.Abstractions.Checkpoint.CheckpointSnapshot! snapshot, long? expectedParentStep, Voluta.Abstractions.Runtime.ICheckpointUnitOfWork? unitOfWork, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.Task!

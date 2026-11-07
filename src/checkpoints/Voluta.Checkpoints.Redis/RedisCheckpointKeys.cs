@@ -29,6 +29,18 @@ internal static class RedisCheckpointKeys
         return prefix + "thread:" + SanitizeThreadId(threadId);
     }
 
+    /// <summary>
+    ///     Key of the per-thread head marker (guarded-put CAS state): <c>{prefix}head:{safeThreadId}</c>.
+    ///     Deliberately outside the <c>thread:</c> namespace so thread discovery
+    ///     (<see cref="ThreadScanPattern" /> / <see cref="TryParseThreadIdFromKey" />) never
+    ///     surfaces it as a thread.
+    /// </summary>
+    public static string HeadKey(string? keyPrefix, string threadId)
+    {
+        var prefix = NormalizePrefix(keyPrefix);
+        return prefix + "head:" + SanitizeThreadId(threadId);
+    }
+
     /// <summary>Scan pattern matching every thread key under the prefix.</summary>
     public static string ThreadScanPattern(string? keyPrefix)
     {

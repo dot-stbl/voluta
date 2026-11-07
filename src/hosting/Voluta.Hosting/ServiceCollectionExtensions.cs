@@ -17,7 +17,9 @@ public static class ServiceCollectionExtensions
     /// <param name="services">Service collection.</param>
     /// <returns>The same collection for chaining.</returns>
     /// <remarks>
-    ///     Requires a singleton <c>CompiledGraph</c> (typically via <c>AddVoluta</c>).
+    ///     Requires a singleton <see cref="Voluta.Graph.IGraphResolver" /> and
+    ///     <see cref="Voluta.Abstractions.Checkpoint.ICheckpointer" /> (typically via
+    ///     <c>AddVoluta</c> — both <c>Graph(...)</c> and <c>Graphs(...)</c> register the resolver).
     ///     Multi-instance hosts should replace <see cref="InMemoryThreadWakeBus" /> with a
     ///     durable bus and use a shared checkpointer (File / EF / S3).
     /// </remarks>

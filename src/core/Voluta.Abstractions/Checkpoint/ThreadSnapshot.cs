@@ -49,4 +49,21 @@ public sealed class ThreadSnapshot
     ///     All pending HITL interrupts (empty when none or legacy single-payload snapshots).
     /// </summary>
     public IReadOnlyList<PendingInterrupt> PendingInterrupts { get; init; } = [];
+
+    /// <summary>
+    ///     Graph identity of the compiled graph that wrote this snapshot (null for legacy
+    ///     snapshots). Additive field — null default, mirrors <see cref="CheckpointSnapshot" />.
+    /// </summary>
+    public string? GraphId { get; init; }
+
+    /// <summary>
+    ///     Graph version paired with <see cref="GraphId" /> (null for legacy snapshots).
+    /// </summary>
+    public string? GraphVersion { get; init; }
+
+    /// <summary>
+    ///     Host-supplied reason when this snapshot was written by an out-of-band cancellation
+    ///     (null otherwise). Additive field — null default.
+    /// </summary>
+    public string? CancelReason { get; init; }
 }

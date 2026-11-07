@@ -16,6 +16,11 @@ internal static class CheckpointStateMutation
     /// <summary>
     ///     Loads the latest checkpoint, applies writes via channel reducers, puts a new step.
     /// </summary>
+    /// <remarks>
+    ///     Host-initiated put: guarded with the loaded snapshot's step (the host edit appends
+    ///     history, so the loaded step is the natural parent guard); carries the executing
+    ///     topology's graph identity. No host unit of work — standalone write.
+    /// </remarks>
     public static async Task<ThreadSnapshot> UpdateStateAsync(
         GraphTopology topology,
         ICheckpointer checkpointer,
@@ -23,7 +28,12 @@ internal static class CheckpointStateMutation
         IEnumerable<ChannelWrite> writes,
         CancellationToken cancellationToken)
     {
-        var latest = await checkpointer.GetAsync(threadId, cancellationToken)
+        var writer = new RunCheckpointWriter(checkpointer, unitOfWork: null)
+        {
+            GraphId = topology.GraphId,
+            GraphVersion = topology.GraphVersion,
+        };
+        var latest = await writer.GetAsync(threadId, cancellationToken)
                      ?? throw new GraphThreadNotFoundException(
                          $"No checkpoint found for thread '{threadId}'.");
 
@@ -56,9 +66,10 @@ internal static class CheckpointStateMutation
             latest.LastNode,
             nextNodes,
             pendingSends,
-            interruptPayload);
+            interruptPayload,
+            identity: writer.Identity);
 
-        await checkpointer.PutAsync(snapshot, cancellationToken);
+        await writer.PutAsync(snapshot, cancellationToken);
         return ThreadSnapshotMapping.FromSnapshot(snapshot);
     }
 
@@ -66,6 +77,13 @@ internal static class CheckpointStateMutation
     ///     Copies the checkpoint at <paramref name="step" /> onto <paramref name="newThreadId" />
     ///     at the same step index (history root for the new thread).
     /// </summary>
+    /// <remarks>
+    ///     Host-initiated put outside a run, through the same guarded writer as
+    ///     <see cref="UpdateStateAsync" /> (D5 fork path): the target thread's latest step (when
+    ///     the fork lands on an existing thread) is the parent guard, so a competing fork or
+    ///     run-write on that thread loses with <c>checkpoint.conflict</c> instead of silently
+    ///     overwriting. A fresh target has no parent, so its first put stays the blind write.
+    /// </remarks>
     public static async Task<ThreadSnapshot> ForkAsync(
         ICheckpointer checkpointer,
         string sourceThreadId,
@@ -96,6 +114,11 @@ internal static class CheckpointStateMutation
                 $"No checkpoint at step {step} for thread '{sourceThreadId}'.");
         }
 
+        // Guard baseline: the target thread's latest step (null when the thread is new — the
+        // fork then stays the blind first write, exactly as before).
+        var writer = new RunCheckpointWriter(checkpointer, unitOfWork: null);
+        await writer.GetAsync(newThreadId, cancellationToken);
+
         var forked = new CheckpointSnapshot
         {
             FormatVersion = source.FormatVersion,
@@ -110,9 +133,12 @@ internal static class CheckpointStateMutation
             LastNode = source.LastNode,
             NextNodes = [.. source.NextNodes],
             InterruptPayload = source.InterruptPayload,
+            GraphId = source.GraphId,
+            GraphVersion = source.GraphVersion,
+            CancelReason = source.CancelReason,
         };
 
-        await checkpointer.PutAsync(forked, cancellationToken);
+        await writer.PutAsync(forked, cancellationToken);
         return ThreadSnapshotMapping.FromSnapshot(forked);
     }
 

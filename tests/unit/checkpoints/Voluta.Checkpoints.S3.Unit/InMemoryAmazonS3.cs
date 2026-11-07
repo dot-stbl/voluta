@@ -9,13 +9,15 @@ namespace Voluta.Checkpoints.S3.Unit;
 
 /// <summary>
 ///     Builds an <see cref="IAmazonS3" /> substitute backed by an in-memory object map
-///     covering PutObject / GetObject / ListObjectsV2 used by <see cref="S3Checkpointer" />.
+///     covering PutObject (including If-Match conditional writes) / GetObject / ListObjectsV2
+///     used by <see cref="S3Checkpointer" />.
 /// </summary>
 internal static class InMemoryAmazonS3
 {
     public static IAmazonS3 Create()
     {
         var objects = new ConcurrentDictionary<string, byte[]>(StringComparer.Ordinal);
+        var etags = new ConcurrentDictionary<string, string>(StringComparer.Ordinal);
         var client = Substitute.For<IAmazonS3>();
 
         client.PutObjectAsync(Arg.Any<PutObjectRequest>(), Arg.Any<CancellationToken>())
@@ -24,11 +26,35 @@ internal static class InMemoryAmazonS3
                 var request = callInfo.Arg<PutObjectRequest>();
                 var cancellationToken = callInfo.Arg<CancellationToken>();
                 var key = request.Key ?? "";
+                if (request.IfMatch is { } precondition
+                    && (!etags.TryGetValue(key, out var current) || current != precondition))
+                {
+                    throw new AmazonS3Exception("At least one of the pre-conditions you specified did not hold.")
+                    {
+                        StatusCode = HttpStatusCode.PreconditionFailed,
+                        ErrorCode = "PreconditionFailed",
+                    };
+                }
+
+                if (request.IfNoneMatch == "*"
+                    && objects.ContainsKey(key))
+                {
+                    // Conditional create: object already exists → 412 PreconditionFailed.
+                    throw new AmazonS3Exception("At least one of the pre-conditions you specified did not hold.")
+                    {
+                        StatusCode = HttpStatusCode.PreconditionFailed,
+                        ErrorCode = "PreconditionFailed",
+                    };
+                }
+
                 var bytes = await ReadBodyAsync(request, cancellationToken);
                 objects[key] = bytes;
+                var etag = Guid.NewGuid().ToString("N");
+                etags[key] = etag;
                 return new PutObjectResponse
                 {
                     HttpStatusCode = HttpStatusCode.OK,
+                    ETag = etag,
                 };
             });
 
@@ -43,6 +69,7 @@ internal static class InMemoryAmazonS3
                         BucketName = request.BucketName,
                         Key = key,
                         HttpStatusCode = HttpStatusCode.OK,
+                        ETag = etags.GetValueOrDefault(key),
                         ResponseStream = new MemoryStream(bytes),
                     })
                     : throw new AmazonS3Exception("The specified key does not exist.")

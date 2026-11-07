@@ -1,2 +1,4 @@
 #nullable enable
 Voluta.Checkpoints.File.FileCheckpointer.ListThreadIdsAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<string!>!>!
+
+Voluta.Checkpoints.File.FileCheckpointer.PutAsync(Voluta.Abstractions.Checkpoint.CheckpointSnapshot! snapshot, long? expectedParentStep, Voluta.Abstractions.Runtime.ICheckpointUnitOfWork? unitOfWork, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.Task!

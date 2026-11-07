@@ -12,7 +12,19 @@ public sealed class ICheckpointerShould
         var type = typeof(ICheckpointer);
 
         type.IsInterface.ShouldBeTrue();
-        type.GetMethod(nameof(ICheckpointer.PutAsync)).ShouldNotBeNull();
+        // Shipped blind put (frozen 0.4.0 contract).
+        type
+            .GetMethods()
+            .ShouldContain(static method =>
+                method.Name == nameof(ICheckpointer.PutAsync)
+                && method.GetParameters().Length == 2);
+        // Additive guarded DIM (all parameters required — no optional-parameter shadowing).
+        type
+            .GetMethods()
+            .ShouldContain(static method =>
+                method.Name == nameof(ICheckpointer.PutAsync)
+                && method.GetParameters().Length == 4
+                && method.IsAbstract == false);
         type.GetMethod(nameof(ICheckpointer.GetAsync)).ShouldNotBeNull();
         type.GetMethod(nameof(ICheckpointer.ListAsync)).ShouldNotBeNull();
     }

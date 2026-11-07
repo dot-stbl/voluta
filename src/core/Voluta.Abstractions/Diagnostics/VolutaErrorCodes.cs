@@ -47,6 +47,12 @@ public static class VolutaErrorCodes
     /// <summary>Resume requested for a thread that is not interrupted.</summary>
     public const string GraphInvalidResume = "graph.invalid_resume";
 
+    /// <summary>Snapshot identity pair differs from the executing graph's pair.</summary>
+    public const string GraphVersionMismatch = "graph.version_mismatch";
+
+    /// <summary>Cancel requested for a thread that is Done / Failed (terminal).</summary>
+    public const string GraphInvalidCancel = "graph.invalid_cancel";
+
     /// <summary>Continue requested for a thread that is not in Running status.</summary>
     public const string GraphInvalidContinue = "graph.invalid_continue";
 
@@ -64,6 +70,9 @@ public static class VolutaErrorCodes
 
     /// <summary>Checkpointer Put failed (IO / provider).</summary>
     public const string CheckpointPutFailed = "checkpoint.put_failed";
+
+    /// <summary>Guarded put lost a concurrency race (parent-step mismatch / same-step lost update).</summary>
+    public const string CheckpointConflict = "checkpoint.conflict";
 
     /// <summary>Checkpointer Get failed (IO / provider), not a miss.</summary>
     public const string CheckpointGetFailed = "checkpoint.get_failed";
@@ -103,12 +112,15 @@ public static class VolutaErrorCodes
         GraphOutOfSteps,
         GraphRunFailed,
         GraphInvalidResume,
+        GraphVersionMismatch,
+        GraphInvalidCancel,
         GraphInvalidContinue,
         GraphThreadNotFound,
         GraphStepNotFound,
         ChannelConcurrentUpdate,
         ChannelInvalidWrite,
         CheckpointPutFailed,
+        CheckpointConflict,
         CheckpointGetFailed,
         CheckpointListFailed,
         CheckpointCorruptPayload,

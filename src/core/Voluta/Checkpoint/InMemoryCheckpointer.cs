@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using Voluta.Abstractions.Checkpoint;
+using Voluta.Abstractions.Diagnostics;
+using Voluta.Abstractions.Runtime;
 using Voluta.Diagnostics;
 
 namespace Voluta.Checkpoint;
@@ -24,8 +26,57 @@ public sealed class InMemoryCheckpointer : ICheckpointer, IThreadDiscovery
     /// <remarks>
     ///     Ownership: engine <see cref="CheckpointSnapshot" /> instances are treated as exclusive
     ///     after Put — maps are not re-cloned on store. Isolation is enforced on Get/List by cloning.
+    ///     Blind write: unconditional append keyed (thread, step) — the shipped 0.4.0 behavior.
+    ///     <para>
+    ///         RS0027: the guarded 4-parameter override deliberately takes ALL parameters as
+    ///         required (no optional-parameter shadowing of this shipped form), so this shipped
+    ///         overload is no longer the widest.
+    ///     </para>
     /// </remarks>
-    public Task PutAsync(CheckpointSnapshot snapshot, CancellationToken cancellationToken = default)
+    [global::System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "ApiDesign",
+        "RS0027: API with optional parameter(s) should have the most parameters amongst its public overloads",
+        Justification = "Shipped blind put is frozen; the guarded override takes all parameters as required.")]
+    [global::System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "ApiDesign",
+        "RS0027: API with optional parameter(s) should have the most parameters amongst its public overloads",
+        Justification = "Shipped blind put is frozen; the guarded override takes all parameters as required.")]
+    public Task PutAsync(
+        CheckpointSnapshot snapshot,
+        CancellationToken cancellationToken = default)
+    {
+        return PutCoreAsync(snapshot, expectedParentStep: null, cancellationToken);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    ///     Guarded put: single-threaded-state CAS under the per-thread lock — the latest step
+    ///     is compared against <paramref name="expectedParentStep" /> (max over the stored
+    ///     history, so an out-of-order blind put of a lower step cannot skew the guard), then
+    ///     swapped. Rewriting the expected step itself is allowed.
+    /// </remarks>
+    public Task PutAsync(
+        CheckpointSnapshot snapshot,
+        long? expectedParentStep,
+        ICheckpointUnitOfWork? unitOfWork,
+        CancellationToken cancellationToken)
+    {
+        if (unitOfWork is not null)
+        {
+            // Transactional participation: the host owns the commit boundary — route the
+            // process-local write through its unit of work (explicit handoff, no ambient flow).
+            return unitOfWork.ExecuteAsync(
+                _ => PutCoreAsync(snapshot, expectedParentStep, CancellationToken.None),
+                CancellationToken.None);
+        }
+
+        return PutCoreAsync(snapshot, expectedParentStep, cancellationToken);
+    }
+
+    private Task PutCoreAsync(
+        CheckpointSnapshot snapshot,
+        long? expectedParentStep,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -37,6 +88,17 @@ public sealed class InMemoryCheckpointer : ICheckpointer, IThreadDiscovery
         var list = history.GetOrAdd(snapshot.ThreadId, static _ => []);
         lock (list)
         {
+            var latestStep = LatestStepLocked(list);
+            if (expectedParentStep is { } expected
+                && latestStep != expected)
+            {
+                throw new CheckpointStoreException(
+                    VolutaErrorCodes.CheckpointConflict,
+                    $"Checkpoint put for thread '{snapshot.ThreadId}' step {snapshot.Step} lost a " +
+                    $"concurrency race: expected parent step {expected}, " +
+                    $"latest step {(latestStep is null ? "<none>" : latestStep.Value.ToString())}.");
+            }
+
             // Store without deep re-clone: RunEngineSnapshots.Build already allocated fresh maps.
             list.Add(snapshot);
         }
@@ -135,6 +197,25 @@ public sealed class InMemoryCheckpointer : ICheckpointer, IThreadDiscovery
             .ToArray();
         return Task.FromResult<IReadOnlyList<string>>(ids);
     }
+
+    /// <summary>Highest step in the thread's history (callers must hold the list lock).</summary>
+    /// <remarks>
+    ///     Max — not the last append — so an out-of-order blind put of a lower step cannot
+    ///     make the following guarded puts conflict.
+    /// </remarks>
+    private static long? LatestStepLocked(List<CheckpointSnapshot> list)
+    {
+        long? latest = null;
+        foreach (var item in list)
+        {
+            if (latest is null || item.Step > latest.Value)
+            {
+                latest = item.Step;
+            }
+        }
+
+        return latest;
+    }
 }
 
 /// <summary>
@@ -183,6 +264,9 @@ file static class InMemoryCheckpointClone
             NextNodes = [.. snapshot.NextNodes],
             InterruptPayload = snapshot.InterruptPayload,
             PendingInterrupts = [.. snapshot.PendingInterrupts],
+            GraphId = snapshot.GraphId,
+            GraphVersion = snapshot.GraphVersion,
+            CancelReason = snapshot.CancelReason,
         };
     }
 }

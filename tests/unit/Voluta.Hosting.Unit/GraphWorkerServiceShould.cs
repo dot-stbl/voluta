@@ -77,6 +77,7 @@ public sealed class GraphWorkerServiceShould
         var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
 
         var bus = new InMemoryThreadWakeBus();
+        var checkpointer = new InMemoryCheckpointer();
         var graph = new StateGraph()
             .AddChannel("messages", ChannelKind.Append)
             .AddNode(
@@ -89,9 +90,12 @@ public sealed class GraphWorkerServiceShould
                 })
             .AddEdge(GraphConstants.Start, "slow")
             .AddEdge("slow", GraphConstants.End)
-            .Compile(new InMemoryCheckpointer());
+            .Compile(checkpointer);
 
-        var runner = new GraphThreadRunner(graph, NullLogger<GraphThreadRunner>.Instance);
+        var runner = new GraphThreadRunner(
+            new SingleGraphResolver(graph),
+            checkpointer,
+            NullLogger<GraphThreadRunner>.Instance);
         var worker = new GraphWorkerService(bus, runner, NullLogger<GraphWorkerService>.Instance);
 
         using var hostLifetime = new CancellationTokenSource(TimeSpan.FromSeconds(20));

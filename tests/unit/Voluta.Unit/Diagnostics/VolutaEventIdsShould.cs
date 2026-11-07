@@ -44,6 +44,8 @@ public sealed class VolutaEventIdsShould
         new GraphRunFailedException("failed").Code.ShouldBe(VolutaErrorCodes.GraphRunFailed);
         new GraphInvalidResumeException("not interrupted").Code.ShouldBe(VolutaErrorCodes.GraphInvalidResume);
         new GraphInvalidContinueException("not running").Code.ShouldBe(VolutaErrorCodes.GraphInvalidContinue);
+        new GraphVersionMismatchException("identity mismatch").Code.ShouldBe(VolutaErrorCodes.GraphVersionMismatch);
+        new GraphInvalidCancelException("cannot cancel").Code.ShouldBe(VolutaErrorCodes.GraphInvalidCancel);
         new GraphThreadNotFoundException("missing").Code.ShouldBe(VolutaErrorCodes.GraphThreadNotFound);
         new GraphStepNotFoundException("missing step").Code.ShouldBe(VolutaErrorCodes.GraphStepNotFound);
         new GraphConcurrentUpdateException("two writers").Code.ShouldBe(VolutaErrorCodes.ChannelConcurrentUpdate);
@@ -144,6 +146,14 @@ public sealed class VolutaEventIdsShould
             {
                 new GraphInvalidContinueException("not running"),
                 VolutaEventIds.GraphInvalidContinue
+            },
+            {
+                new GraphVersionMismatchException("identity mismatch"),
+                VolutaEventIds.GraphVersionMismatch
+            },
+            {
+                new GraphInvalidCancelException("cannot cancel"),
+                VolutaEventIds.GraphInvalidCancel
             },
             {
                 new GraphThreadNotFoundException("missing"),

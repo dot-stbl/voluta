@@ -122,3 +122,25 @@ Voluta.Abstractions.State.GraphChannelDeclaration.ValueType.get -> System.Type?
 Voluta.Abstractions.State.GraphChannelSchema.Builder.Add(string! name, Voluta.Abstractions.Channels.ChannelKind kind, System.Type! valueType) -> Voluta.Abstractions.State.GraphChannelSchema.Builder!
 Voluta.Abstractions.State.GraphChannelSchema.Builder.Add(string! name, Voluta.Abstractions.Channels.IChannelReducer! reducer) -> Voluta.Abstractions.State.GraphChannelSchema.Builder!
 Voluta.Abstractions.State.GraphChannelSchema.Builder.Add(string! name, Voluta.Abstractions.Channels.IChannelReducer! reducer, System.Type? valueType) -> Voluta.Abstractions.State.GraphChannelSchema.Builder!
+
+Voluta.Abstractions.Checkpoint.CheckpointSnapshot.CancelReason.get -> string?
+Voluta.Abstractions.Checkpoint.CheckpointSnapshot.CancelReason.init -> void
+Voluta.Abstractions.Checkpoint.CheckpointSnapshot.GraphId.get -> string?
+Voluta.Abstractions.Checkpoint.CheckpointSnapshot.GraphId.init -> void
+Voluta.Abstractions.Checkpoint.CheckpointSnapshot.GraphVersion.get -> string?
+Voluta.Abstractions.Checkpoint.CheckpointSnapshot.GraphVersion.init -> void
+Voluta.Abstractions.Checkpoint.ICheckpointer.PutAsync(Voluta.Abstractions.Checkpoint.CheckpointSnapshot! snapshot, long? expectedParentStep, Voluta.Abstractions.Runtime.ICheckpointUnitOfWork? unitOfWork, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.Task!
+const Voluta.Abstractions.Diagnostics.VolutaErrorCodes.CheckpointConflict = "checkpoint.conflict" -> string!
+const Voluta.Abstractions.Diagnostics.VolutaErrorCodes.GraphInvalidCancel = "graph.invalid_cancel" -> string!
+const Voluta.Abstractions.Diagnostics.VolutaErrorCodes.GraphVersionMismatch = "graph.version_mismatch" -> string!
+Voluta.Abstractions.Runtime.ICheckpointUnitOfWork
+Voluta.Abstractions.Runtime.ICheckpointUnitOfWork.ExecuteAsync(System.Func<System.Threading.CancellationToken, System.Threading.Tasks.Task!>! write, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.Task!
+Voluta.Abstractions.Runtime.ICheckpointUnitOfWork.TryGetResource<T>(out T resource) -> bool
+Voluta.Abstractions.Runtime.RunOptions.UnitOfWork.get -> Voluta.Abstractions.Runtime.ICheckpointUnitOfWork?
+Voluta.Abstractions.Runtime.RunOptions.UnitOfWork.init -> void
+Voluta.Abstractions.Checkpoint.ThreadSnapshot.CancelReason.get -> string?
+Voluta.Abstractions.Checkpoint.ThreadSnapshot.CancelReason.init -> void
+Voluta.Abstractions.Checkpoint.ThreadSnapshot.GraphId.get -> string?
+Voluta.Abstractions.Checkpoint.ThreadSnapshot.GraphId.init -> void
+Voluta.Abstractions.Checkpoint.ThreadSnapshot.GraphVersion.get -> string?
+Voluta.Abstractions.Checkpoint.ThreadSnapshot.GraphVersion.init -> void

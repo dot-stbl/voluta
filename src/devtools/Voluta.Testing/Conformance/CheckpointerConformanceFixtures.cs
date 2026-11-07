@@ -63,6 +63,14 @@ internal static class CheckpointerConformanceFixtures
                 $"Conformance: LastNode mismatch (expected '{expected.LastNode}', got '{actual.LastNode}').");
         }
 
+        if (!string.Equals(actual.GraphId, expected.GraphId, StringComparison.Ordinal)
+            || !string.Equals(actual.GraphVersion, expected.GraphVersion, StringComparison.Ordinal)
+            || !string.Equals(actual.CancelReason, expected.CancelReason, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "Conformance: GraphId/GraphVersion/CancelReason mismatch after roundtrip.");
+        }
+
         if (actual.NextNodes.Count != expected.NextNodes.Count
             || !actual.NextNodes.SequenceEqual(expected.NextNodes, StringComparer.Ordinal))
         {

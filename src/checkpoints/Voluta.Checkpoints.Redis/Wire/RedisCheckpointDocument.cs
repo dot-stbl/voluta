@@ -35,6 +35,12 @@ internal sealed class RedisCheckpointDocument
 
     public JsonElement? InterruptPayload { get; set; }
 
+    public string? GraphId { get; set; }
+
+    public string? GraphVersion { get; set; }
+
+    public string? CancelReason { get; set; }
+
     public static RedisCheckpointDocument FromSnapshot(CheckpointSnapshot snapshot)
     {
         return new RedisCheckpointDocument
@@ -83,6 +89,9 @@ internal sealed class RedisCheckpointDocument
             LastNode = snapshot.LastNode,
             NextNodes = [.. snapshot.NextNodes],
             InterruptPayload = RedisCheckpointJson.ToElement(snapshot.InterruptPayload),
+            GraphId = snapshot.GraphId,
+            GraphVersion = snapshot.GraphVersion,
+            CancelReason = snapshot.CancelReason,
         };
     }
 
@@ -142,6 +151,9 @@ internal sealed class RedisCheckpointDocument
             LastNode = LastNode,
             NextNodes = [.. NextNodes],
             InterruptPayload = RedisCheckpointJson.FromElement(InterruptPayload),
+            GraphId = GraphId,
+            GraphVersion = GraphVersion,
+            CancelReason = CancelReason,
         };
     }
 }

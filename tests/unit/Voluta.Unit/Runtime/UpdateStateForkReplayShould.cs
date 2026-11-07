@@ -1,5 +1,6 @@
 using Shouldly;
 using Voluta.Abstractions.Channels;
+using Voluta.Abstractions.Checkpoint;
 using Voluta.Abstractions.Diagnostics;
 using Voluta.Abstractions.Results;
 using Voluta.Abstractions.Runtime;
@@ -7,6 +8,7 @@ using Voluta.Abstractions.Streaming;
 using Voluta.Checkpoint;
 using Voluta.Exceptions.Run;
 using Voluta.Graph.Builder;
+using Voluta.Testing.Checkpoint;
 using Xunit;
 
 namespace Voluta.Unit.Runtime;
@@ -133,6 +135,76 @@ public sealed class UpdateStateForkReplayShould
         exception.Code.ShouldBe(VolutaErrorCodes.GraphStepNotFound);
     }
 
+    [Fact(DisplayName = "Given a fork onto a fresh thread, when put, then the put stays blind (no expected parent)")]
+    public async Task ForkFreshTargetStaysBlind()
+    {
+        var recording = new RecordingCheckpointer(new InMemoryCheckpointer());
+        var graph = BuildLinear(recording);
+
+        await graph.InvokeAsync(
+            [],
+            new RunOptions { ThreadId = "fork-src-b", StreamMode = StreamMode.Values });
+        var sourceStep = (await graph.GetHistoryAsync("fork-src-b"))[0].Step;
+
+        await graph.ForkAsync("fork-src-b", sourceStep, "fork-child-b");
+
+        var forkPuts = recording.PutRecords
+            .Where(static put => put.Snapshot.ThreadId == "fork-child-b")
+            .ToList();
+        forkPuts.ShouldHaveSingleItem();
+        // Fresh target has no parent — the first write stays the blind write (back-compat).
+        forkPuts[0].ExpectedParentStep.ShouldBeNull();
+    }
+
+    [Fact(DisplayName = "Given a fork onto an existing thread, when put, then guarded with the target's latest step")]
+    public async Task ForkExistingTargetIsGuarded()
+    {
+        var recording = new RecordingCheckpointer(new InMemoryCheckpointer());
+        var graph = BuildLinear(recording);
+
+        await graph.InvokeAsync(
+            [],
+            new RunOptions { ThreadId = "fork-src-g", StreamMode = StreamMode.Values });
+        await graph.InvokeAsync(
+            [],
+            new RunOptions { ThreadId = "fork-child-g", StreamMode = StreamMode.Values });
+        var targetLatest = (await graph.GetStateAsync("fork-child-g"))!.Step;
+        var sourceStep = (await graph.GetHistoryAsync("fork-src-g"))[0].Step;
+
+        await graph.ForkAsync("fork-src-g", sourceStep, "fork-child-g");
+
+        var forkPuts = recording.PutRecords
+            .Where(static put => put.Snapshot.ThreadId == "fork-child-g")
+            .ToList();
+        forkPuts.Count.ShouldBeGreaterThanOrEqualTo(2);
+        // The fork lands on a thread with history: the target's latest step is the parent guard.
+        forkPuts.Last().ExpectedParentStep.ShouldBe(targetLatest);
+    }
+
+    [Fact(DisplayName = "Given a fork whose target advances mid-fork (competing writer), when put, then checkpoint.conflict instead of a silent overwrite")]
+    public async Task ForkConflictsWhenTargetMoved()
+    {
+        var checkpointer = new CompetingForkTargetCheckpointer(new InMemoryCheckpointer(), "fork-race-target");
+        var graph = BuildLinear(checkpointer);
+
+        await graph.InvokeAsync(
+            [],
+            new RunOptions { ThreadId = "fork-race-src", StreamMode = StreamMode.Values });
+        await graph.InvokeAsync(
+            [],
+            new RunOptions { ThreadId = "fork-race-target", StreamMode = StreamMode.Values });
+
+        var sourceStep = (await graph.GetHistoryAsync("fork-race-src"))[0].Step;
+        var exception = await Should.ThrowAsync<CheckpointStoreException>(
+            async () => await graph.ForkAsync("fork-race-src", sourceStep, "fork-race-target"));
+
+        exception.Code.ShouldBe(VolutaErrorCodes.CheckpointConflict);
+        // The forked snapshot must not overwrite the competitor's write.
+        var target = await graph.GetStateAsync("fork-race-target");
+        target!.Step.ShouldBeGreaterThan(sourceStep);
+        target.Status.ShouldBe(GraphRunStatus.Running);
+    }
+
     [Fact(DisplayName = "Given Done thread, when ContinueAsync, then GraphInvalidContinueException")]
     public async Task ContinueDoneThrows()
     {
@@ -229,7 +301,7 @@ public sealed class UpdateStateForkReplayShould
         messages.ShouldContain("patched");
     }
 
-    private static Voluta.Graph.CompiledGraph BuildLinear(InMemoryCheckpointer checkpointer)
+    private static Voluta.Graph.CompiledGraph BuildLinear(ICheckpointer checkpointer)
     {
         return new StateGraph()
             .AddChannel("messages", ChannelKind.Append)
@@ -245,5 +317,66 @@ public sealed class UpdateStateForkReplayShould
             .AddEdge("a", "b")
             .AddEdge("b", GraphConstants.End)
             .Compile(checkpointer);
+    }
+
+    /// <summary>
+    ///     Simulates a writer racing the fork: when the fork loads the target thread (its guard
+    ///     baseline), the competitor blindly advances that thread before the fork's guarded put
+    ///     lands — the fork must lose with <c>checkpoint.conflict</c> instead of overwriting.
+    /// </summary>
+    private sealed class CompetingForkTargetCheckpointer(
+        InMemoryCheckpointer inner,
+        string targetThreadId) : ICheckpointer
+    {
+        private bool competed;
+
+        public async Task PutAsync(
+            CheckpointSnapshot snapshot,
+            long? expectedParentStep,
+            ICheckpointUnitOfWork? unitOfWork,
+            CancellationToken cancellationToken)
+        {
+            await inner.PutAsync(snapshot, expectedParentStep, unitOfWork, cancellationToken);
+        }
+
+        public Task PutAsync(
+            CheckpointSnapshot snapshot,
+            CancellationToken cancellationToken = default)
+        {
+            return PutAsync(snapshot, null, null, cancellationToken);
+        }
+
+        public async Task<CheckpointSnapshot?> GetAsync(
+            string threadId,
+            CancellationToken cancellationToken = default)
+        {
+            var snapshot = await inner.GetAsync(threadId, cancellationToken);
+            if (threadId == targetThreadId && snapshot is not null && !competed)
+            {
+                competed = true;
+                // Competing writer advances the target (blind, next step).
+                await inner.PutAsync(
+                    new CheckpointSnapshot
+                    {
+                        FormatVersion = snapshot.FormatVersion,
+                        ThreadId = threadId,
+                        Step = snapshot.Step + 1,
+                        Status = GraphRunStatus.Running,
+                        ChannelValues = new Dictionary<string, object?>(StringComparer.Ordinal),
+                        ChannelVersions = new Dictionary<string, long>(StringComparer.Ordinal),
+                        VersionsSeen = new Dictionary<string, IReadOnlyDictionary<string, long>>(StringComparer.Ordinal),
+                    },
+                    cancellationToken);
+            }
+
+            return snapshot;
+        }
+
+        public Task<IReadOnlyList<CheckpointSnapshot>> ListAsync(
+            string threadId,
+            CancellationToken cancellationToken = default)
+        {
+            return inner.ListAsync(threadId, cancellationToken);
+        }
     }
 }

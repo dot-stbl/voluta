@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Voluta.Abstractions.Checkpoint;
 using Voluta.Abstractions.Runtime;
 using Voluta.Abstractions.Streaming;
 using Voluta.Graph;
@@ -7,24 +8,18 @@ using Voluta.Hosting.Wake;
 namespace Voluta.Hosting.Worker;
 
 /// <summary>
-///     Runs one wake against a compiled graph: invoke or resume until interrupt/done/fail.
+///     Runs one wake against a graph resolved per thread: invoke or resume until interrupt/done/fail.
 /// </summary>
-public sealed class GraphThreadRunner
+/// <remarks>
+///     Resolution goes through <see cref="IGraphResolver" /> at run entry: a wake with a
+///     command resumes the parked thread using its stored snapshot (the resolver sees that
+///     snapshot and picks the matching graph), a plain start resolves the default graph.
+/// </remarks>
+/// <param name="graphs">Per-thread graph resolver (host default + versioned graphs).</param>
+/// <param name="checkpointer">Checkpoint store, read to resolve by snapshot identity.</param>
+/// <param name="logger">Logger.</param>
+public sealed class GraphThreadRunner(IGraphResolver graphs, ICheckpointer checkpointer, ILogger<GraphThreadRunner> logger)
 {
-    private readonly CompiledGraph graph;
-    private readonly ILogger<GraphThreadRunner> logger;
-
-    /// <summary>
-    ///     Creates a runner bound to a compiled graph.
-    /// </summary>
-    /// <param name="graph">Compiled graph (singleton / compile-once).</param>
-    /// <param name="logger">Logger.</param>
-    public GraphThreadRunner(CompiledGraph graph, ILogger<GraphThreadRunner> logger)
-    {
-        this.graph = graph;
-        this.logger = logger;
-    }
-
     /// <summary>
     ///     Processes a single wake to a terminal disposition.
     /// </summary>
@@ -34,6 +29,8 @@ public sealed class GraphThreadRunner
     {
         try
         {
+            var snapshot = await checkpointer.GetAsync(wake.ThreadId, cancellationToken);
+            var graph = await graphs.ResolveAsync(wake.ThreadId, snapshot, cancellationToken);
             var terminal = wake.Command is { } command
                 ? await graph.ResumeInvokeAsync(wake.ThreadId, command, cancellationToken)
                 : await graph.InvokeAsync(

@@ -1,3 +1,8 @@
 #nullable enable
 Voluta.Checkpoints.EntityFrameworkCore.EntityFrameworkCoreCheckpointer.ListThreadIdsAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<string!>!>!
 Voluta.Checkpoints.EntityFrameworkCore.EntityFrameworkCoreCheckpointer<TContext>.ListThreadIdsAsync(System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<System.Collections.Generic.IReadOnlyList<string!>!>!
+
+Voluta.Checkpoints.EntityFrameworkCore.EntityFrameworkCoreCheckpointer.PutAsync(Voluta.Abstractions.Checkpoint.CheckpointSnapshot! snapshot, long? expectedParentStep, Voluta.Abstractions.Runtime.ICheckpointUnitOfWork? unitOfWork, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.Task!
+Voluta.Checkpoints.EntityFrameworkCore.EntityFrameworkCoreCheckpointer<TContext>.PutAsync(Voluta.Abstractions.Checkpoint.CheckpointSnapshot! snapshot, long? expectedParentStep, Voluta.Abstractions.Runtime.ICheckpointUnitOfWork? unitOfWork, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.Task!
+Voluta.Checkpoints.EntityFrameworkCore.CheckpointRecord.ConcurrencyToken.get -> long
+Voluta.Checkpoints.EntityFrameworkCore.CheckpointRecord.ConcurrencyToken.set -> void

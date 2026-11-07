@@ -15,6 +15,8 @@ internal sealed class GraphTopology(
     IReadOnlyDictionary<string, IReadOnlyList<string>> staticEdges,
     IReadOnlyDictionary<string, Func<GraphContext, IReadOnlyList<string>>> conditionalEdges,
     int recursionLimit,
+    string? graphId = null,
+    string? graphVersion = null,
     IServiceProvider? services = null)
 {
     /// <summary>
@@ -42,6 +44,18 @@ internal sealed class GraphTopology(
     ///     Maximum supersteps before out-of-steps failure.
     /// </summary>
     public int RecursionLimit { get; } = recursionLimit;
+
+    /// <summary>
+    ///     Host-assigned graph identifier (compile options), stamped onto every snapshot this
+    ///     topology's runs write. Null when the graph compiled without identity.
+    /// </summary>
+    public string? GraphId { get; } = graphId;
+
+    /// <summary>
+    ///     Host-assigned graph version paired with <see cref="GraphId" />. Null when the graph
+    ///     compiled without identity.
+    /// </summary>
+    public string? GraphVersion { get; } = graphVersion;
 
     /// <summary>
     ///     Host services snapshotted at compile time (same instance for the process).

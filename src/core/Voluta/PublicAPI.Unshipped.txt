@@ -95,3 +95,26 @@ Voluta.Graph.Builder.StateGraph.AddChannel(string! name, Voluta.Abstractions.Cha
 Voluta.Graph.Builder.StateGraph.AddChannel(Voluta.Abstractions.State.GraphChannelDeclaration! declaration) -> Voluta.Graph.Builder.StateGraph!
 Voluta.Graph.Builder.StateGraph.AddChannel<T>(string! name, Voluta.Abstractions.Channels.ChannelKind kind) -> Voluta.Graph.Builder.StateGraph!
 Voluta.Graph.Builder.StateGraph.AddChannel<T>(string! name, Voluta.Abstractions.Channels.IChannelReducer! reducer) -> Voluta.Graph.Builder.StateGraph!
+
+static readonly Voluta.Diagnostics.VolutaEventIds.CheckpointConflict -> Microsoft.Extensions.Logging.EventId
+static readonly Voluta.Diagnostics.VolutaEventIds.GraphInvalidCancel -> Microsoft.Extensions.Logging.EventId
+static readonly Voluta.Diagnostics.VolutaEventIds.GraphVersionMismatch -> Microsoft.Extensions.Logging.EventId
+Voluta.Checkpoint.InMemoryCheckpointer.PutAsync(Voluta.Abstractions.Checkpoint.CheckpointSnapshot! snapshot, long? expectedParentStep, Voluta.Abstractions.Runtime.ICheckpointUnitOfWork? unitOfWork, System.Threading.CancellationToken cancellationToken) -> System.Threading.Tasks.Task!
+Voluta.Exceptions.Run.GraphInvalidCancelException
+Voluta.Exceptions.Run.GraphInvalidCancelException.GraphInvalidCancelException(string! message) -> void
+Voluta.Exceptions.Run.GraphVersionMismatchException
+Voluta.Exceptions.Run.GraphVersionMismatchException.GraphVersionMismatchException(string! message) -> void
+Voluta.Graph.CompiledGraph.CancelAsync(string! threadId, string? reason = null, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Voluta.Abstractions.Checkpoint.ThreadSnapshot!>!
+Voluta.Graph.CompiledGraph.ContinueAsync(string! threadId, Voluta.Abstractions.Runtime.RunOptions! options, System.Threading.CancellationToken cancellationToken) -> System.Collections.Generic.IAsyncEnumerable<Voluta.Abstractions.Streaming.StreamEvent!>!
+Voluta.Graph.CompiledGraph.ResumeAsync(string! threadId, Voluta.Abstractions.Runtime.Command! command, Voluta.Abstractions.Runtime.RunOptions! options, System.Threading.CancellationToken cancellationToken) -> System.Collections.Generic.IAsyncEnumerable<Voluta.Abstractions.Streaming.StreamEvent!>!
+Voluta.Graph.IGraphResolver
+Voluta.Graph.IGraphResolver.ResolveAsync(string! threadId, Voluta.Abstractions.Checkpoint.CheckpointSnapshot? snapshot, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Voluta.Graph.CompiledGraph!>!
+Voluta.Graph.SingleGraphResolver
+Voluta.Graph.SingleGraphResolver.ResolveAsync(string! threadId, Voluta.Abstractions.Checkpoint.CheckpointSnapshot? snapshot, System.Threading.CancellationToken cancellationToken = default(System.Threading.CancellationToken)) -> System.Threading.Tasks.Task<Voluta.Graph.CompiledGraph!>!
+Voluta.Graph.SingleGraphResolver.SingleGraphResolver(Voluta.Graph.CompiledGraph! graph) -> void
+Voluta.Graph.Options.CompileOptions.GraphId.get -> string?
+Voluta.Graph.Options.CompileOptions.GraphId.init -> void
+Voluta.Graph.Options.CompileOptions.GraphVersion.get -> string?
+Voluta.Graph.Options.CompileOptions.GraphVersion.init -> void
+Voluta.Graph.CompiledGraph.GraphId.get -> string?
+Voluta.Graph.CompiledGraph.GraphVersion.get -> string?

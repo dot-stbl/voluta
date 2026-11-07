@@ -24,6 +24,8 @@ internal static class GraphExceptionResponse
             GraphStepNotFoundException => StatusCodes.Status404NotFound,
             GraphInvalidResumeException => StatusCodes.Status409Conflict,
             GraphInvalidContinueException => StatusCodes.Status409Conflict,
+            GraphVersionMismatchException => StatusCodes.Status409Conflict,
+            GraphInvalidCancelException => StatusCodes.Status409Conflict,
             GraphInvalidCommandException => StatusCodes.Status400BadRequest,
             GraphOutOfStepsException => StatusCodes.Status409Conflict,
             _ => null,

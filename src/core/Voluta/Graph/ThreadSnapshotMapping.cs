@@ -19,6 +19,9 @@ internal static class ThreadSnapshotMapping
             NextNodes = snapshot.NextNodes,
             InterruptPayload = snapshot.InterruptPayload,
             PendingInterrupts = snapshot.PendingInterrupts,
+            GraphId = snapshot.GraphId,
+            GraphVersion = snapshot.GraphVersion,
+            CancelReason = snapshot.CancelReason,
         };
     }
 }
