@@ -4,6 +4,36 @@ All notable changes to Voluta are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow the
 `Directory.Build.props` version and NuGet tags (`vX.Y.Z`).
 
+## [0.5.1] - Unreleased
+
+### Fixed
+
+- **Repeated `InvokeAsync` on the same thread failed with `checkpoint.conflict`**:
+  0.5.0 made every checkpoint write guarded (`expectedParentStep`), but every run still
+  started blind at step `0` — so a second invocation on a thread whose history ended
+  at step `N` wrote its marker with a guard of `N` and lost against the store's own
+  latest step. The run entry now loads the thread's latest snapshot and **continues the
+  numbering**: the marker lands at `latest + 1` as a guarded put (`expectedParentStep =
+  latest`) and the supersteps follow it. A fresh thread keeps the 0.4.0 behavior — a
+  blind marker at step `0`.
+- **Channels start from a clean input** (as in 0.4.0): a repeated invocation re-executes
+  the graph from the entry with the caller's input writes only — the previous run's
+  channel values are not restored (use `ForkAsync` + `ContinueAsync` to continue a
+  specific step).
+- **Graph identity is validated on the invoke entry**: a thread whose history was written
+  by a foreign `(GraphId, GraphVersion)` now fails with `GraphVersionMismatchException`
+  (`graph.version_mismatch`) and its checkpoint is left untouched; a legacy snapshot
+  without a graph version is accepted unchecked, exactly like on resume / continue.
+- **A race between two invocations still has exactly one winner**: the loser fails with
+  `CheckpointStoreException` (`checkpoint.conflict`) and persists nothing.
+- **Step numbers are now absolute per thread**: history entries and stream events carry
+  the thread-wide step, so a repeated invocation starts at a higher step instead of
+  reusing `0..N` — the numbers stay monotonic per thread.
+- **Guards and the recursion limit count the supersteps of the current run on a repeated
+  invoke**: they use the run-local counter (as on the first invoke), not the thread's
+  absolute step — a long thread no longer runs into an exhausted budget on the second
+  invocation (resume / continue are unchanged and still use the absolute step).
+
 ## [0.5.0] - Unreleased
 
 ### Added

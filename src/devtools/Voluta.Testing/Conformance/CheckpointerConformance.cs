@@ -1,6 +1,9 @@
 using Voluta.Abstractions.Checkpoint;
 using Voluta.Abstractions.Runtime;
 using Voluta.Abstractions.Serialization;
+using Voluta.Abstractions.Streaming;
+using Voluta.Graph;
+using Voluta.Testing.Fixtures;
 
 namespace Voluta.Testing.Conformance;
 
@@ -10,6 +13,9 @@ namespace Voluta.Testing.Conformance;
 /// </summary>
 public static class CheckpointerConformance
 {
+    /// <summary>How many times the repeated-invoke scenario runs the graph on one thread.</summary>
+    private const int RepeatedInvocationCount = 3;
+
     /// <summary>
     ///     Put then Get MUST roundtrip C-shape fields for the same thread.
     /// </summary>
@@ -533,6 +539,319 @@ public static class CheckpointerConformance
         }
     }
 
+    /// <summary>
+    ///     Repeated invokes on one thread MUST keep the thread's history append-only: no
+    ///     invocation fails, the listed history grows with every invocation, its steps never go
+    ///     backwards, and every checkpoint a later invocation appends sits strictly above the
+    ///     previous invocation's last step.
+    /// </summary>
+    /// <remarks>
+    ///     The scenario drives the runtime over the provider under test, so it pins the store
+    ///     contract every provider owes the engine: a thread's step numbering continues instead
+    ///     of rewinding to zero (a blind start on a thread that already holds history made the
+    ///     second invoke fail with <c>checkpoint.conflict</c>).
+    /// </remarks>
+    /// <param name="checkpointer">Provider under test.</param>
+    /// <param name="cancellationToken">Cooperative cancellation.</param>
+    public static async Task RepeatedInvokesGrowThreadHistoryAsync(
+        ICheckpointer checkpointer,
+        CancellationToken cancellationToken = default)
+    {
+        var threadId = $"conformance-repeat-{Guid.NewGuid():N}";
+        var graph = GraphFixtures.Linear().Compile(checkpointer);
+
+        var previousCount = 0;
+        long? previousLastStep = null;
+
+        for (var invocation = 0; invocation < RepeatedInvocationCount; invocation++)
+        {
+            var terminal = await graph.InvokeAsync(
+                [],
+                new RunOptions { ThreadId = threadId },
+                cancellationToken);
+            if (terminal.Kind != StreamEventKind.End)
+            {
+                throw new InvalidOperationException(
+                    $"Conformance repeated invokes: invocation {invocation} ended with '{terminal.Kind}' instead of End.");
+            }
+
+            IReadOnlyList<CheckpointSnapshot> history;
+            try
+            {
+                history = await checkpointer.ListAsync(threadId, cancellationToken);
+            }
+            catch (NotSupportedException)
+            {
+                // A provider without history support cannot express the growth contract.
+                return;
+            }
+
+            for (var index = 1; index < history.Count; index++)
+            {
+                if (history[index].Step < history[index - 1].Step)
+                {
+                    throw new InvalidOperationException(
+                        "Conformance repeated invokes: the listed steps must not go backwards.");
+                }
+            }
+
+            if (history.Count <= previousCount)
+            {
+                throw new InvalidOperationException(
+                    $"Conformance repeated invokes: the history must grow with every invocation " +
+                    $"({previousCount} → {history.Count}).");
+            }
+
+            // The history is ordered by step, so the checkpoints this invocation appended come
+            // last — they must all sit above the previous invocation's last step. The terminal
+            // Done reuses the last commit's step, hence the non-strict comparison inside a run.
+            var appendedSteps = history
+                .Skip(previousCount)
+                .Select(static snapshot => snapshot.Step)
+                .ToArray();
+            if (appendedSteps.Length == 0)
+            {
+                throw new InvalidOperationException(
+                    "Conformance repeated invokes: an invocation must append at least one checkpoint.");
+            }
+
+            if (previousLastStep is { } previousStep)
+            {
+                foreach (var step in appendedSteps)
+                {
+                    if (step <= previousStep)
+                    {
+                        throw new InvalidOperationException(
+                            $"Conformance repeated invokes: step {step} of a later invocation must exceed " +
+                            $"the previous invocation's last step {previousStep}.");
+                    }
+                }
+            }
+
+            previousLastStep = history[^1].Step;
+            previousCount = history.Count;
+        }
+    }
+
+    /// <summary>
+    ///     Two concurrent invokes on one thread that already holds a checkpoint MUST resolve to
+    ///     exactly one winner: one run completes, the other fails with
+    ///     <see cref="CheckpointStoreException" /> code <c>checkpoint.conflict</c> and persists
+    ///     nothing.
+    /// </summary>
+    /// <remarks>
+    ///     The race is made deterministic through the <see cref="ICheckpointer" /> contract alone
+    ///     (see <see cref="RacingCheckpointer" />): both runs read the thread's latest snapshot
+    ///     before either of them writes, so both target the same next step, and the store calls
+    ///     are serialized so that the provider's <em>guard</em> — not the provider's transaction
+    ///     mechanics — decides the winner. The losing run's guarded put then sees the advanced
+    ///     latest step and MUST fail with <c>checkpoint.conflict</c> on every provider.
+    /// </remarks>
+    /// <param name="checkpointer">Provider under test.</param>
+    /// <param name="cancellationToken">Cooperative cancellation.</param>
+    public static async Task ConcurrentInvokesHaveExactlyOneWinnerAsync(
+        ICheckpointer checkpointer,
+        CancellationToken cancellationToken = default)
+    {
+        var threadId = $"conformance-invoke-race-{Guid.NewGuid():N}";
+        var racer = new RacingCheckpointer(checkpointer, threadId);
+        var graph = GraphFixtures.Linear().Compile(racer);
+
+        // Seed the thread with one completed run, so the race is decided by the guarded marker
+        // put (a blind start on an empty thread would let both runs in).
+        var seeded = await graph.InvokeAsync(
+            [],
+            new RunOptions { ThreadId = threadId },
+            cancellationToken);
+        if (seeded.Kind != StreamEventKind.End)
+        {
+            throw new InvalidOperationException(
+                $"Conformance concurrent invokes: the seeding run ended with '{seeded.Kind}' instead of End.");
+        }
+
+        racer.Arm();
+
+        var outcomes = await Task.WhenAll(
+            InvokeCatchingConflictAsync(graph, threadId, cancellationToken),
+            InvokeCatchingConflictAsync(graph, threadId, cancellationToken));
+
+        var successes = outcomes.Count(static outcome => outcome.TerminalKind == StreamEventKind.End);
+        if (successes != 1)
+        {
+            throw new InvalidOperationException(
+                $"Conformance concurrent invokes: expected exactly one successful invocation, got {successes} " +
+                $"({string.Join(", ", outcomes.Select(static outcome => outcome.TerminalKind?.ToString() ?? "conflict"))}).");
+        }
+
+        var conflicts = outcomes.Where(static outcome => outcome.Conflict is not null).ToArray();
+        if (conflicts.Length != 1)
+        {
+            throw new InvalidOperationException(
+                $"Conformance concurrent invokes: expected exactly one losing invocation, got {conflicts.Length}.");
+        }
+
+        var conflict = conflicts[0].Conflict;
+        if (conflict is null
+            || conflict.Code != Voluta.Abstractions.Diagnostics.VolutaErrorCodes.CheckpointConflict)
+        {
+            throw new InvalidOperationException(
+                "Conformance concurrent invokes: the losing invocation must fail with code 'checkpoint.conflict', " +
+                $"got {(conflict is null ? "<no exception>" : conflict.Code)}.");
+        }
+
+        // The loser persisted nothing: the winner's history is intact and ends with Done.
+        var history = await checkpointer.ListAsync(threadId, cancellationToken);
+        if (history.Count == 0)
+        {
+            throw new InvalidOperationException(
+                "Conformance concurrent invokes: the thread's history is empty after the race.");
+        }
+
+        if (history.Any(static snapshot => snapshot.Status == GraphRunStatus.Failed))
+        {
+            throw new InvalidOperationException(
+                "Conformance concurrent invokes: the losing invocation must not persist a Failed snapshot.");
+        }
+
+        if (history[^1].Status != GraphRunStatus.Done)
+        {
+            throw new InvalidOperationException(
+                "Conformance concurrent invokes: the winning invocation must leave a Done snapshot.");
+        }
+    }
+
+    /// <summary>Runs one invoke, capturing the store conflict instead of throwing it.</summary>
+    private static async Task<InvokeOutcome> InvokeCatchingConflictAsync(
+        CompiledGraph graph,
+        string threadId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var terminal = await graph.InvokeAsync(
+                [],
+                new RunOptions { ThreadId = threadId },
+                cancellationToken);
+            return new InvokeOutcome(terminal.Kind, null);
+        }
+        catch (CheckpointStoreException conflict)
+        {
+            return new InvokeOutcome(null, conflict);
+        }
+    }
+
+    /// <summary>
+    ///     Outcome of one racing invoke: the terminal stream kind when the run completed, or the
+    ///     captured store conflict when it lost the race.
+    /// </summary>
+    private sealed record InvokeOutcome(StreamEventKind? TerminalKind, CheckpointStoreException? Conflict);
+
+    /// <summary>
+    ///     <see cref="ICheckpointer" /> decorator that makes an engine-level race deterministic
+    ///     and provider-agnostic:
+    ///     <list type="bullet">
+    ///         <item>a load barrier — the loads of the watched thread block until two of them
+    ///         arrived, so both racing runs observe the SAME latest snapshot and therefore target
+    ///         the SAME next step;</item>
+    ///         <item>a store gate — the store calls are serialized, so the provider's guard (not
+    ///         the provider's transaction mechanics) decides the winner: the second racer's
+    ///         guarded put sees the advanced latest step and fails with
+    ///         <c>checkpoint.conflict</c>.</item>
+    ///     </list>
+    /// </summary>
+    /// <remarks>
+    ///     Only the <see cref="ICheckpointer" /> contract is used — no provider internals. The
+    ///     gate also keeps providers that cannot run two concurrent transactions on one
+    ///     connection (SQLite over a shared connection) from failing with a transport error
+    ///     instead of the contractual conflict.
+    /// </remarks>
+    private sealed class RacingCheckpointer(ICheckpointer inner, string threadId) : ICheckpointer
+    {
+        private static readonly TimeSpan BarrierTimeout = TimeSpan.FromSeconds(10);
+
+        private readonly SemaphoreSlim gate = new(1, 1);
+        private readonly TaskCompletionSource barrier = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int loads;
+        private volatile bool armed;
+
+        /// <summary>Starts blocking the loads of the watched thread at the barrier.</summary>
+        public void Arm()
+        {
+            armed = true;
+        }
+
+        /// <inheritdoc />
+        public Task PutAsync(
+            CheckpointSnapshot snapshot,
+            CancellationToken cancellationToken = default)
+        {
+            return PutAsync(snapshot, null, null, cancellationToken);
+        }
+
+        /// <inheritdoc />
+        public async Task PutAsync(
+            CheckpointSnapshot snapshot,
+            long? expectedParentStep,
+            ICheckpointUnitOfWork? unitOfWork,
+            CancellationToken cancellationToken)
+        {
+            await gate.WaitAsync(cancellationToken);
+            try
+            {
+                await inner.PutAsync(snapshot, expectedParentStep, unitOfWork, cancellationToken);
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }
+
+        /// <inheritdoc />
+        public async Task<CheckpointSnapshot?> GetAsync(
+            string thread,
+            CancellationToken cancellationToken = default)
+        {
+            CheckpointSnapshot? snapshot;
+            await gate.WaitAsync(cancellationToken);
+            try
+            {
+                snapshot = await inner.GetAsync(thread, cancellationToken);
+            }
+            finally
+            {
+                gate.Release();
+            }
+
+            if (armed && string.Equals(thread, threadId, StringComparison.Ordinal))
+            {
+                // The snapshot is read before the barrier — both racers must see the same one.
+                if (Interlocked.Increment(ref loads) >= 2)
+                {
+                    barrier.TrySetResult();
+                }
+
+                try
+                {
+                    await barrier.Task.WaitAsync(BarrierTimeout, cancellationToken);
+                }
+                catch (TimeoutException)
+                {
+                    // The other racer never reached the barrier — race as it is.
+                }
+            }
+
+            return snapshot;
+        }
+
+        /// <inheritdoc />
+        public Task<IReadOnlyList<CheckpointSnapshot>> ListAsync(
+            string thread,
+            CancellationToken cancellationToken = default)
+        {
+            return inner.ListAsync(thread, cancellationToken);
+        }
+    }
+
     /// <summary>Runs one racing guarded put, capturing the conflict outcome instead of throwing.</summary>
     private static async Task<GuardedPutOutcome> RacePutAsync(
         ICheckpointer checkpointer,
@@ -578,6 +897,8 @@ public static class CheckpointerConformance
         await AdditiveFieldsRoundtripAsync(checkpointer, cancellationToken);
         await StampedTypeRoundtripAsync(checkpointer, cancellationToken);
         await ConcurrentGuardedPutsExactlyOneWinnerAsync(checkpointer, cancellationToken);
+        await RepeatedInvokesGrowThreadHistoryAsync(checkpointer, cancellationToken);
+        await ConcurrentInvokesHaveExactlyOneWinnerAsync(checkpointer, cancellationToken);
     }
 
     /// <summary>Asserts the call throws <see cref="CheckpointStoreException" /> and returns it.</summary>

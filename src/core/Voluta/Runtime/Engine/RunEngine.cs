@@ -67,6 +67,15 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
         CancellationToken cancellationToken = default)
     {
         var checkpointer = CreateWriter(options);
+
+        // One read of the thread's latest snapshot: it seeds the put guard (the writer keeps the
+        // loaded step), it gives the run's step-numbering base, and it feeds the identity check.
+        var latest = await checkpointer.GetAsync(options.ThreadId, cancellationToken);
+        if (latest is not null)
+        {
+            ValidateGraphIdentity(latest, options.ThreadId);
+        }
+
         var store = new ChannelStore(topology.Channels);
         var inputList = input as IList<ChannelWrite> ?? [.. input];
         if (inputList.Count > 0)
@@ -79,11 +88,13 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
             GraphConstants.Start,
             store.SnapshotValues(),
             null);
-        long step = 0;
+        var step = latest?.Step + 1 ?? 0L;
         string? lastNode = null;
         var startedAt = DateTimeOffset.UtcNow;
 
-        // First put of a fresh run: no loaded/written snapshot yet → guard is null (blind), as before.
+        // First put of the run: on a fresh thread the guard is null (blind write, 0.4.0 behavior);
+        // on a thread with history the guard is the loaded latest step (seeded by GetAsync above),
+        // so the marker lands at latest + 1.
         await checkpointer.PutAsync(
             RunEngineSnapshots.Build(
                 options.ThreadId,
@@ -118,6 +129,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                            resumeKind: null,
                            joinArrivals: null,
                            startedAt,
+                           superstepBase: step,
                            cancellationToken: cancellationToken))
         {
             yield return item;
@@ -378,7 +390,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
                            resumedArrivals,
                            startedAt,
                            skipStaticBeforeOnce: checkpoint.StopReason == RunStopReason.StaticBefore,
-                           cancellationToken))
+                           cancellationToken: cancellationToken))
         {
             yield return item;
         }
@@ -433,12 +445,16 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
             StringComparer.Ordinal);
 
         // Superstep entry order (v050): guards → static-before → limit → execute.
+        // Resume/continue evaluate guards and the recursion cap on the thread's absolute
+        // step (step + 1), exactly as before 0.5.1; the run-local counter exists only
+        // on the fresh-invoke path.
         var park = await RunEngineLoopHelpers.TryEnterSuperstepAsync(
             topology,
             checkpointer,
             options,
             store,
             checkpoint.Step,
+            checkpoint.Step + 1,
             checkpoint.LastNode,
             readyTasks,
             [],
@@ -615,12 +631,16 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
             }
 
             // Superstep entry order (v050): guards → static-before → limit → execute.
+            // Resume/continue evaluate guards and the recursion cap on the thread's absolute
+            // step (step + 1), exactly as before 0.5.1; the run-local counter exists only
+            // on the fresh-invoke path.
             var park = await RunEngineLoopHelpers.TryEnterSuperstepAsync(
                 topology,
                 checkpointer,
                 options,
                 store,
                 step,
+                step + 1,
                 lastNode,
                 readyTasks,
                 RunEngineExecution.StepSends(readyTasks),
@@ -708,6 +728,7 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
         IReadOnlyDictionary<string, IReadOnlyList<string>>? joinArrivals = null,
         DateTimeOffset startedAt = default,
         bool skipStaticBeforeOnce = false,
+        long superstepBase = 0,
         [System.Runtime.CompilerServices.EnumeratorCancellation]
         CancellationToken cancellationToken = default)
     {
@@ -726,6 +747,9 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
 
             if (readyTasks.Count == 0)
             {
+                // Terminal Done is a same-step rewrite over the last commit's step (the step is
+                // not consumed) — every provider allows rewriting the expected step, so the
+                // thread's last step stays the last commit's step.
                 await checkpointer.PutAsync(
                     RunEngineSnapshots.Build(
                         options.ThreadId,
@@ -750,12 +774,15 @@ internal sealed class RunEngine(GraphTopology topology, ICheckpointer checkpoint
 
             // Superstep entry order (v050, deliberate): guards → static-before → limit →
             // execute. The parked snapshot keeps the current step (the step is not consumed).
+            // The guards and the recursion cap count supersteps of THIS run (run-local
+            // numbering), while the snapshots keep the thread's absolute steps.
             var park = await RunEngineLoopHelpers.TryEnterSuperstepAsync(
                 topology,
                 checkpointer,
                 options,
                 store,
                 step,
+                step - superstepBase + 1,
                 lastNode,
                 readyTasks,
                 RunEngineExecution.StepSends(readyTasks),
@@ -887,14 +914,22 @@ file static class RunEngineLoopHelpers
     ///     check). On a stop it parks the run — <c>Interrupted</c> snapshot at the current step
     ///     (the step is not consumed) for guard/static stops, <c>Failed</c> at the incremented
     ///     step on the cap — and returns the terminal event to replay plus the failure to
-    ///     throw; null means execution proceeds at <paramref name="step" /> + 1.
+    ///     throw; null means execution proceeds at <c>step</c> + 1.
     /// </summary>
+    /// <remarks>
+    ///     Two step scales meet here: <c>step</c> is the thread's absolute step (the snapshots
+    ///     keep it), while the run-local counter (the superstep index about to run, 1-based on
+    ///     the scale of <see cref="Voluta.Graph.Options.CompileOptions.RecursionLimit" />) drives
+    ///     the guards and the recursion cap — a thread that already carries history must not
+    ///     start the new run with an exhausted budget.
+    /// </remarks>
     public static async Task<SuperstepEntryPark?> TryEnterSuperstepAsync(
         GraphTopology topology,
         RunCheckpointWriter checkpointer,
         RunOptions options,
         ChannelStore store,
         long step,
+        long runStep,
         string? lastNode,
         IReadOnlyList<ReadyTask> readyTasks,
         IReadOnlyList<PendingSend> pendingSends,
@@ -903,7 +938,7 @@ file static class RunEngineLoopHelpers
         bool checkStaticBefore,
         CancellationToken cancellationToken)
     {
-        var guardStop = EvaluateGuards(topology.RunGuards, step + 1, startedAt);
+        var guardStop = EvaluateGuards(topology.RunGuards, runStep, startedAt);
         if (guardStop is { } guardReason)
         {
             await ParkPolicyStopAsync(
@@ -943,8 +978,11 @@ file static class RunEngineLoopHelpers
                 RunEngineStreaming.Terminal(options.StreamMode, StreamEventKind.Interrupt, step, store));
         }
 
+        // The recursion cap counts THIS run's supersteps (runStep); the snapshot below keeps
+        // the thread's absolute step (step + 1) — the failed checkpoint must land in the
+        // thread's history, and the exception points at the very step it was written to.
         var nextStep = step + 1;
-        if (IsOutOfSteps(nextStep, topology.RecursionLimit))
+        if (IsOutOfSteps(runStep, topology.RecursionLimit))
         {
             var outOfSteps = new GraphOutOfStepsException(topology.RecursionLimit, nextStep);
             await checkpointer.PutAsync(
