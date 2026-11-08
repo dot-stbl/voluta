@@ -7,8 +7,10 @@ namespace Voluta.Runtime.Engine.Support;
 ///     Per-run checkpoint session wrapping the host <see cref="ICheckpointer" />:
 ///     <list type="bullet">
 ///         <item>guarded puts — every internal put carries <c>expectedParentStep</c> = the step
-///         of the snapshot this run last loaded or wrote (null until the first one, which stays
-///         a blind write exactly as before);</item>
+///         of the snapshot this run last loaded or wrote; the guard is null only while the
+///         thread has no history at all, so the very first put of a fresh thread stays a blind
+///         write exactly as before, while a thread that already carries history starts guarded
+///         against its latest step;</item>
 ///         <item>explicit unit-of-work handoff — <see cref="RunOptions.UnitOfWork" /> travels
 ///         with each put (no ambient flow);</item>
 ///         <item>graph identity — <see cref="GraphId" /> / <see cref="GraphVersion" /> of the
@@ -41,7 +43,12 @@ internal sealed class RunCheckpointWriter(ICheckpointer checkpointer, ICheckpoin
         lastStep = snapshot.Step;
     }
 
-    /// <summary>Loads the latest snapshot, updating the guard step for subsequent puts.</summary>
+    /// <summary>
+    ///     Loads the latest snapshot, updating the guard step for subsequent puts. The run
+    ///     entry uses the same read for two things: it seeds the guard (so the first put of a
+    ///     thread with history is guarded against the loaded step) and it yields the base of
+    ///     the run's step numbering — guard and base can never disagree.
+    /// </summary>
     public async Task<CheckpointSnapshot?> GetAsync(string threadId, CancellationToken cancellationToken)
     {
         var snapshot = await checkpointer.GetAsync(threadId, cancellationToken);
